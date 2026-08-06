@@ -1,3 +1,7 @@
-# The Deploy to Cloudflare wizard stores this as a Worker secret.
-# Create your own key at https://cloud.near.ai and never commit the value.
+# The Deploy to Cloudflare wizard stores these as Worker secrets.
+# Create your own provider keys and never commit their values.
 NEAR_AI_API_KEY=replace-with-your-own-near-key
+PHALA_API_KEY=replace-with-your-own-phala-key
+
+# Required owner gate for all provider-billed routes. Use 20-256 random characters.
+DEMO_ACCESS_TOKEN=replace-with-a-long-random-access-token

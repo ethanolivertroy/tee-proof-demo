@@ -1,3 +1,4 @@
+import type { AttestationReport as AciAttestationReport } from './phala-aci/types'
 import type { ProviderId } from './policy'
 
 export interface CompletionReceipt {
@@ -9,6 +10,11 @@ export interface CompletionReceipt {
   signature: string
   signedText: string
   verifiedAt: string
+  receiptId?: string
+  workloadId?: string
+  workloadKeysetDigest?: string
+  upstreamProviderType?: string
+  sessionId?: string
 }
 
 export interface AttestationReport {
@@ -48,13 +54,7 @@ export interface CpuEvidence {
   composeManifestHashed: boolean
   composeBoundToQuote: boolean
   osImagePinned: boolean
-  measurements: {
-    mrtd: string
-    rtmr0: string
-    rtmr1: string
-    rtmr2: string
-    rtmr3: string
-  }
+  measurements: { mrtd: string; rtmr0: string; rtmr1: string; rtmr2: string; rtmr3: string }
 }
 
 export interface GpuEvidence {
@@ -77,10 +77,10 @@ export interface GpuEvidence {
   rawDeviceTokens: Record<string, string>
 }
 
-export interface TrustEvidence {
+interface BaseTrustEvidence {
   modelId: string
   provider: ProviderId
-  protocol: 'near-e2ee-v2'
+  protocol: 'near-e2ee-v2' | 'phala-aci-v2'
   verifiedAt: string
   expiresAt: string
   nonce: string
@@ -88,12 +88,57 @@ export interface TrustEvidence {
   endpointLabel: string
   signingPublicKey: string
   policyDigest: string
+}
+
+export interface NearTrustEvidence extends BaseTrustEvidence {
+  provider: 'near-ai'
+  protocol: 'near-e2ee-v2'
   composeHash: string
   osImageHash: string
   cpu: CpuEvidence
   gpu: GpuEvidence
   raw: AttestationReport
 }
+
+export interface PhalaGatewayEvidence {
+  quoteAuthentic: boolean
+  quoteHash: string
+  tcbStatus: string
+  advisoryIds: string[]
+  quoteType: string
+  debugDisabled: boolean
+  nonceBound: boolean
+  identityBound: boolean
+  keysetDigestBound: boolean
+  keysetEndorsementValid: boolean
+  keysetFresh: boolean
+  measurementsPinned: boolean
+  eventLogReplayed: boolean
+  composeBoundToQuote: boolean
+  kmsIdentityCustodyValid: boolean
+  sourceProvenanceMatched: boolean
+  workloadId: string
+  workloadKeysetDigest: string
+  appId: string
+  composeHash: string
+  kmsRootPublicKey: string
+  e2eeAlgorithm: string
+  e2eeKeyId: string
+  e2eePublicKey: string
+  receiptAlgorithm: string
+  receiptKeyId: string
+  receiptPublicKey: string
+  measurements: { mrtd: string; rtmr0: string; rtmr1: string; rtmr2: string; rtmr3: string; mrConfigId: string }
+}
+
+export interface PhalaTrustEvidence extends BaseTrustEvidence {
+  provider: 'phala-cloud'
+  protocol: 'phala-aci-v2'
+  gateway: PhalaGatewayEvidence
+  raw: AciAttestationReport
+}
+
+export type TrustEvidence = NearTrustEvidence | PhalaTrustEvidence
 
 export interface SignatureReport {
   text: string
@@ -108,12 +153,7 @@ export interface CompletionResponse {
   model: string
   choices: Array<{
     finish_reason?: string
-    message: {
-      role?: string
-      content?: string
-      reasoning_content?: string
-      reasoning?: string
-    }
+    message: { role?: string; content?: string; reasoning_content?: string; reasoning?: string }
   }>
   metadata?: { weight_version: string }
 }

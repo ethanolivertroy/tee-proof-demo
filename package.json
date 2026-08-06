@@ -42,6 +42,12 @@
     "bindings": {
       "NEAR_AI_API_KEY": {
         "description": "Add your own [NEAR AI Cloud API key](https://cloud.near.ai). Cloudflare stores it as a Worker secret; it is never shipped to the browser or committed to the copied repository. Provider usage is billed to your account."
+      },
+      "PHALA_API_KEY": {
+        "description": "Add your own [Phala Cloud API key](https://cloud.phala.network). It is stored as a Worker secret and used only for the fixed Phala confidential route."
+      },
+      "DEMO_ACCESS_TOKEN": {
+        "description": "Set a strong, unique token (20-256 characters). Visitors must enter it before the Worker accepts any provider-billed route. Share it only with people you authorize."
       }
     }
   },

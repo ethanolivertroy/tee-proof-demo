@@ -16,4 +16,6 @@ Include the affected commit, reproduction steps, expected denial, observed behav
 
 ## Operational boundary
 
-A template deployment creates a public `workers.dev` endpoint backed by the deployer's provider credential. The repository does not provide authentication, Cloudflare Access, a hard provider spending cap, or a production data-handling authorization. Operators are responsible for adding those controls before sharing their URL.
+A template deployment creates a publicly reachable `workers.dev` hostname. The built-in `DEMO_ACCESS_TOKEN` gate rejects every provider-billed chat, signature, receipt, and session route unless the caller presents the matching shared secret; the token is removed before provider forwarding. Static assets and attestation endpoints remain public.
+
+This shared-secret gate is not identity-aware authorization, rate limiting, or a hard provider spending cap. Operators should also enable [Cloudflare Access for the Worker](https://developers.cloudflare.com/workers/configuration/routing/workers-dev/#manage-access-to-workersdev), restrict allowed identities, validate their Access configuration, and configure provider-side budget controls before sharing the URL. The project is not a production data-handling authorization.

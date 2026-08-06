@@ -5,7 +5,7 @@
   "compatibility_date": "2026-08-06",
   "compatibility_flags": ["nodejs_compat"],
   "secrets": {
-    "required": ["NEAR_AI_API_KEY"]
+    "required": ["NEAR_AI_API_KEY", "PHALA_API_KEY", "DEMO_ACCESS_TOKEN"]
   },
   "assets": {
     "binding": "ASSETS",

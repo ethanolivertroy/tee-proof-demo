@@ -1,33 +1,39 @@
 import { describe, expect, it, vi } from 'vitest'
 import { handleApiRequest } from '../worker/index'
-import { POLICY } from '../src/lib/policy'
+import { getModelPolicy } from '../src/lib/policy'
 
-const ORIGIN = `https://${POLICY.endpointLabel}`
+const NEAR = getModelPolicy('deepseek-v4-flash')
+const PHALA = getModelPolicy('phala-gpt-oss-20b')
 const CIPHERTEXT = 'a'.repeat(160)
 const KEY = 'b'.repeat(64)
+const ACCESS = 'correct-owner-access-token-2026'
 
-function makeEnv(apiKey?: string): Env {
+function makeEnv(options: { near?: string | null; phala?: string | null; access?: string | null } = {}): Env {
+  const near = options.near === undefined ? 'near-secret' : options.near
+  const phala = options.phala === undefined ? 'phala-secret' : options.phala
+  const access = options.access === undefined ? ACCESS : options.access
   return {
     ASSETS: { fetch: vi.fn() } as unknown as Fetcher,
-    ...(apiKey ? { NEAR_AI_API_KEY: apiKey } : {}),
+    ...(near ? { NEAR_AI_API_KEY: near } : {}),
+    ...(phala ? { PHALA_API_KEY: phala } : {}),
+    ...(access ? { DEMO_ACCESS_TOKEN: access } : {}),
   } as Env
 }
 
-function encryptedBody(overrides: Record<string, unknown> = {}) {
-  return JSON.stringify({
-    model: POLICY.model,
-    messages: [{ role: 'user', content: CIPHERTEXT }],
-    max_tokens: 256,
-    stream: false,
-    ...overrides,
-  })
+function nearBody(overrides: Record<string, unknown> = {}) {
+  return JSON.stringify({ model: NEAR.model, messages: [{ role: 'user', content: CIPHERTEXT }], max_tokens: 256, stream: false, ...overrides })
 }
 
-function chatRequest(body = encryptedBody()) {
-  return new Request('https://app.test/api/chat', {
+function phalaBody(overrides: Record<string, unknown> = {}) {
+  return JSON.stringify({ model: PHALA.model, messages: [{ role: 'user', content: CIPHERTEXT }], max_tokens: 512, stream: false, provider: { aci_verified: true }, ...overrides })
+}
+
+function nearChatRequest(body = nearBody(), access = ACCESS) {
+  return new Request(`https://app.test/api/chat?model=${NEAR.id}`, {
     method: 'POST',
     headers: {
       'content-type': 'application/json',
+      'x-demo-access-token': access,
       'x-client-pub-key': KEY,
       'x-model-pub-key': KEY,
       'x-signing-algo': 'ed25519',
@@ -37,45 +43,100 @@ function chatRequest(body = encryptedBody()) {
   })
 }
 
-describe('fixed ciphertext-only Worker relay', () => {
-  it('fails closed when the provider key is absent', async () => {
+function phalaChatRequest(body = phalaBody(), access = ACCESS) {
+  return new Request(`https://app.test/api/chat?model=${PHALA.id}`, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      'x-demo-access-token': access,
+      'x-client-pub-key': KEY,
+      'x-model-pub-key': KEY,
+      'x-e2ee-version': '2',
+      'x-e2ee-nonce': 'c'.repeat(64),
+      'x-e2ee-timestamp': String(Math.floor(Date.now() / 1000)),
+    },
+    body,
+  })
+}
+
+describe('gated ciphertext-only Worker relay', () => {
+  it('requires the owner token before any provider-billed route', async () => {
     const upstream = vi.fn()
-    const response = await handleApiRequest(chatRequest(), makeEnv(), upstream)
-    expect(response.status).toBe(503)
-    expect(await response.json()).toMatchObject({ code: 'missing_api_key' })
+    const missingGate = await handleApiRequest(nearChatRequest(), makeEnv({ access: null }), upstream)
+    const wrongToken = await handleApiRequest(nearChatRequest(undefined, 'wrong-token-that-is-long-enough'), makeEnv(), upstream)
+    const accessCheck = await handleApiRequest(new Request('https://app.test/api/access', {
+      method: 'POST', headers: { 'x-demo-access-token': ACCESS },
+    }), makeEnv(), upstream)
+    expect(missingGate.status).toBe(503)
+    expect(wrongToken.status).toBe(401)
+    expect(accessCheck.status).toBe(204)
     expect(upstream).not.toHaveBeenCalled()
   })
 
-  it('forwards exact encrypted bytes to only the compiled origin', async () => {
-    const body = encryptedBody()
+  it('gates every provider-billed completion evidence route', async () => {
+    const upstream = vi.fn()
+    const paths = [
+      `/api/signature/chat-12345678?model=${NEAR.id}`,
+      `/api/phala/receipts/rcpt-0123456789abcdef01234567?model=${PHALA.id}`,
+      `/api/phala/sessions/as_${'a'.repeat(64)}?model=${PHALA.id}`,
+    ]
+    for (const path of paths) {
+      const response = await handleApiRequest(new Request(`https://app.test${path}`), makeEnv(), upstream)
+      expect(response.status).toBe(401)
+    }
+    expect(upstream).not.toHaveBeenCalled()
+  })
+
+  it('fails closed when the selected provider key is absent', async () => {
+    const upstream = vi.fn()
+    const nearResponse = await handleApiRequest(nearChatRequest(), makeEnv({ near: null }), upstream)
+    const phalaResponse = await handleApiRequest(phalaChatRequest(), makeEnv({ phala: null }), upstream)
+    expect(nearResponse.status).toBe(503)
+    expect(phalaResponse.status).toBe(503)
+    expect(upstream).not.toHaveBeenCalled()
+  })
+
+  it('pins and forwards the exact NEAR encrypted request', async () => {
+    const body = nearBody()
     let captured: { url: string; init?: RequestInit } | undefined
     const upstream = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       captured = { url: String(input), init }
-      return new Response('{"id":"chat-123","choices":[]}', {
-        status: 200,
-        headers: { 'content-type': 'application/json', 'x-request-id': 'opaque-123' },
-      })
+      return new Response('{"id":"chat-123","choices":[]}', { status: 200, headers: { 'content-type': 'application/json' } })
     })
-    const response = await handleApiRequest(chatRequest(body), makeEnv('server-secret'), upstream)
+    const response = await handleApiRequest(nearChatRequest(body), makeEnv(), upstream)
     expect(response.status).toBe(200)
-    expect(captured?.url).toBe(`${ORIGIN}/v1/chat/completions`)
+    expect(captured?.url).toBe(`https://${NEAR.endpointLabel}/v1/chat/completions`)
     const headers = new Headers(captured?.init?.headers)
-    expect(headers.get('authorization')).toBe('Bearer server-secret')
+    expect(headers.get('authorization')).toBe('Bearer near-secret')
     expect(headers.get('x-no-aliasing')).toBe('true')
-    expect(headers.get('x-client-pub-key')).toBe(KEY)
+    expect(headers.has('x-demo-access-token')).toBe(false)
     expect(await new Response(captured?.init?.body).text()).toBe(body)
+  })
+
+  it('pins the Phala origin and requires encrypted-response evidence', async () => {
+    const upstream = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => new Response('{"id":"chat-123","choices":[]}', {
+      status: 200,
+      headers: { 'content-type': 'application/json', 'x-e2ee-applied': 'true', 'x-e2ee-version': '2', 'x-receipt-id': 'rcpt-0123456789abcdef01234567' },
+    }))
+    const response = await handleApiRequest(phalaChatRequest(), makeEnv(), upstream)
+    expect(response.status).toBe(200)
+    expect(String(upstream.mock.calls[0]?.[0])).toBe(`https://${PHALA.endpointLabel}/v1/chat/completions`)
+    const headers = new Headers(upstream.mock.calls[0]?.[1]?.headers)
+    expect(headers.get('authorization')).toBe('Bearer phala-secret')
+    expect(headers.get('x-e2ee-version')).toBe('2')
+    expect(headers.has('x-demo-access-token')).toBe(false)
+    expect(response.headers.get('x-receipt-id')).toBe('rcpt-0123456789abcdef01234567')
   })
 
   it('rejects plaintext, extra fields, model substitution, and multiple messages', async () => {
     const upstream = vi.fn()
-    const plaintext = JSON.stringify({ model: POLICY.model, messages: [{ role: 'user', content: 'plaintext' }], max_tokens: 256, stream: false })
-    const extra = encryptedBody({ user: 'plaintext identifier' })
-    const substituted = encryptedBody({ model: 'evil/model' })
-    const multiple = encryptedBody({ messages: [{ role: 'user', content: CIPHERTEXT }, { role: 'user', content: CIPHERTEXT }] })
-    for (const body of [plaintext, extra, substituted, multiple]) {
-      const response = await handleApiRequest(chatRequest(body), makeEnv('secret'), upstream)
-      expect(response.status).toBe(400)
-    }
+    const bodies = [
+      JSON.stringify({ model: NEAR.model, messages: [{ role: 'user', content: 'plaintext' }], max_tokens: 256, stream: false }),
+      nearBody({ user: 'plaintext identifier' }),
+      nearBody({ model: 'evil/model' }),
+      nearBody({ messages: [{ role: 'user', content: CIPHERTEXT }, { role: 'user', content: CIPHERTEXT }] }),
+    ]
+    for (const body of bodies) expect((await handleApiRequest(nearChatRequest(body), makeEnv(), upstream)).status).toBe(400)
     expect(upstream).not.toHaveBeenCalled()
   })
 
@@ -89,14 +150,13 @@ describe('fixed ciphertext-only Worker relay', () => {
         controller.enqueue(chunk)
         if (produced >= 1024 * 1024) controller.close()
       },
-      cancel() {
-        cancelled = true
-      },
+      cancel() { cancelled = true },
     })
-    const request = new Request('https://app.test/api/chat', {
+    const request = new Request(`https://app.test/api/chat?model=${NEAR.id}`, {
       method: 'POST',
       headers: {
         'content-type': 'application/json',
+        'x-demo-access-token': ACCESS,
         'x-client-pub-key': KEY,
         'x-model-pub-key': KEY,
         'x-signing-algo': 'ed25519',
@@ -106,31 +166,30 @@ describe('fixed ciphertext-only Worker relay', () => {
       duplex: 'half',
     } as RequestInit & { duplex: 'half' })
     const upstream = vi.fn()
-    const response = await handleApiRequest(request, makeEnv('secret'), upstream)
+    const response = await handleApiRequest(request, makeEnv(), upstream)
     expect(response.status).toBe(413)
     expect(cancelled).toBe(true)
     expect(produced).toBeLessThan(128 * 1024)
     expect(upstream).not.toHaveBeenCalled()
   })
 
-  it('pins attestation and signatures to the same fixed origin', async () => {
-    const upstream = vi.fn(async () => new Response('{}', { status: 200 }))
-    const nonce = 'c'.repeat(64)
-    const attestation = await handleApiRequest(new Request(`https://app.test/api/attestation?nonce=${nonce}`), makeEnv(), upstream)
-    const signature = await handleApiRequest(new Request('https://app.test/api/signature/chat_123456'), makeEnv('secret'), upstream)
-    expect(attestation.status).toBe(200)
-    expect(signature.status).toBe(200)
-    expect(upstream).toHaveBeenNthCalledWith(1, `${ORIGIN}/v1/attestation/report?signing_algo=ed25519&nonce=${nonce}`, expect.objectContaining({ redirect: 'manual' }))
-    expect(upstream).toHaveBeenNthCalledWith(2, `${ORIGIN}/v1/signature/chat_123456?signing_algo=ed25519`, expect.objectContaining({ redirect: 'manual' }))
+  it('pins attestation to one compiled origin per reviewed model', async () => {
+    const upstream = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => new Response('{}', { status: 200 }))
+    const nonce = 'd'.repeat(64)
+    for (const policy of [NEAR, PHALA]) {
+      const response = await handleApiRequest(new Request(`https://app.test/api/attestation?model=${policy.id}&nonce=${nonce}`), makeEnv(), upstream)
+      expect(response.status).toBe(200)
+    }
+    expect(String(upstream.mock.calls[0]?.[0])).toBe(`https://${NEAR.endpointLabel}/v1/attestation/report?signing_algo=ed25519&nonce=${nonce}`)
+    expect(String(upstream.mock.calls[1]?.[0])).toBe(`https://${PHALA.endpointLabel}/v1/aci/attestation?nonce=${nonce}`)
   })
 
-  it('rejects malformed challenges and arbitrary GPU verifier payloads', async () => {
+  it('rejects unapproved models, malformed challenges, and arbitrary GPU verifier payloads', async () => {
     const upstream = vi.fn()
-    const badNonce = await handleApiRequest(new Request('https://app.test/api/attestation?nonce=short'), makeEnv(), upstream)
-    const badNras = await handleApiRequest(new Request('https://app.test/api/nras', {
-      method: 'POST',
-      body: JSON.stringify({ url: 'https://attacker.example' }),
-    }), makeEnv(), upstream)
+    const unknown = await handleApiRequest(new Request(`https://app.test/api/attestation?model=evil&nonce=${'e'.repeat(64)}`), makeEnv(), upstream)
+    const badNonce = await handleApiRequest(new Request(`https://app.test/api/attestation?model=${NEAR.id}&nonce=short`), makeEnv(), upstream)
+    const badNras = await handleApiRequest(new Request('https://app.test/api/nras', { method: 'POST', body: JSON.stringify({ url: 'https://attacker.example' }) }), makeEnv(), upstream)
+    expect(unknown.status).toBe(400)
     expect(badNonce.status).toBe(400)
     expect(badNras.status).toBe(400)
     expect(upstream).not.toHaveBeenCalled()
