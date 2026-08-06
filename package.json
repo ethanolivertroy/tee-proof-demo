@@ -1,0 +1,51 @@
+{
+  "name": "tee-proof-demo",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "npm run typecheck && vite build",
+    "check": "npm run lint && npm test && npm run build",
+    "deploy": "npm run build && wrangler deploy",
+    "dev:worker": "npm run build && wrangler dev",
+    "lint": "oxlint src worker tests",
+    "preview": "npm run build && wrangler dev",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "npm run types && tsc -b",
+    "types": "wrangler types"
+  },
+  "dependencies": {
+    "@noble/ciphers": "^2.2.0",
+    "@noble/curves": "^2.2.0",
+    "@noble/hashes": "^2.2.0",
+    "@phala/dcap-qvl": "^0.6.1",
+    "jose": "^6.2.7",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20260801.1",
+    "@types/node": "^24.13.3",
+    "@types/react": "^19.2.17",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^6.0.4",
+    "oxlint": "^1.75.0",
+    "typescript": "~6.0.2",
+    "vite": "^8.2.0",
+    "vite-plugin-node-polyfills": "^0.28.0",
+    "vitest": "^4.1.10",
+    "wrangler": "^4.119.0"
+  },
+  "cloudflare": {
+    "bindings": {
+      "NEAR_AI_API_KEY": {
+        "description": "Add your own [NEAR AI Cloud API key](https://cloud.near.ai). Cloudflare stores it as a Worker secret; it is never shipped to the browser or committed to the copied repository. Provider usage is billed to your account."
+      }
+    }
+  },
+  "overrides": {
+    "undici": "^7.29.0"
+  }
+}

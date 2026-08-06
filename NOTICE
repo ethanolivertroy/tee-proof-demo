@@ -1,0 +1,9 @@
+TEE Proof
+Copyright 2026 Ethan Troy
+
+Browser-side Intel TDX verification, NVIDIA attestation appraisal, and NEAR
+E2EE v2 protocol code are adapted from Attested E2EE Chat, Copyright 2026
+Ethan Troy.
+
+This product includes open-source dependencies listed in package-lock.json.
+Their respective copyright and license notices remain applicable.

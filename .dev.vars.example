@@ -1,0 +1,3 @@
+# The Deploy to Cloudflare wizard stores this as a Worker secret.
+# Create your own key at https://cloud.near.ai and never commit the value.
+NEAR_AI_API_KEY=replace-with-your-own-near-key
