@@ -1,5 +1,5 @@
-import { isRecord } from '../src/lib/guards'
-import { getModelPolicy, isModelId, isNearPolicy, MODEL_OPTIONS, type ModelPolicy, type PhalaModelPolicy } from '../src/lib/policy'
+import { assertNever, isRecord } from '../src/lib/guards'
+import { getModelPolicy, isModelId, isNearPolicy, MODEL_OPTIONS, type ModelPolicy, type NearModelPolicy, type PhalaModelPolicy } from '../src/lib/policy'
 
 const MAX_CHAT_BYTES = 64 * 1024
 const MAX_NRAS_BYTES = 256 * 1024
@@ -96,8 +96,19 @@ async function boundedBody(request: Request, limit: number): Promise<ArrayBuffer
   return body.buffer
 }
 
+function apiKeyFor(env: Env, policy: ModelPolicy): string | undefined {
+  switch (policy.protocol) {
+    case 'near-e2ee-v2':
+      return env.NEAR_AI_API_KEY
+    case 'phala-aci-v2':
+      return env.PHALA_API_KEY
+    default:
+      return assertNever(policy)
+  }
+}
+
 function requireApiKey(env: Env, policy: ModelPolicy): string | Response {
-  const key = isNearPolicy(policy) ? env.NEAR_AI_API_KEY : env.PHALA_API_KEY
+  const key = apiKeyFor(env, policy)
   if (!key) {
     return jsonResponse({ error: `${policy.providerLabel} API key is not configured`, code: 'missing_api_key' }, 503)
   }
@@ -138,15 +149,24 @@ function validPhalaEncryptedPrompt(value: unknown, policy: PhalaModelPolicy): bo
   return hasOnlyKeys(message, EXACT_MESSAGE_KEYS) && message.role === 'user' && validCiphertext(message.content, 60)
 }
 
+function attestationUpstreamPath(policy: ModelPolicy, nonce: string): string {
+  switch (policy.protocol) {
+    case 'near-e2ee-v2':
+      return `/v1/attestation/report?signing_algo=ed25519&nonce=${nonce}`
+    case 'phala-aci-v2':
+      return `/v1/aci/attestation?nonce=${nonce}`
+    default:
+      return assertNever(policy)
+  }
+}
+
 async function proxyAttestation(request: Request, upstreamFetch: FetchLike): Promise<Response> {
   if (request.method !== 'GET') return jsonResponse({ error: 'Method not allowed' }, 405)
   const policy = policyFromRequest(request)
   if (policy instanceof Response) return policy
   const nonce = new URL(request.url).searchParams.get('nonce') ?? ''
   if (!HEX_32.test(nonce)) return jsonResponse({ error: 'nonce must be 32 bytes of hex' }, 400)
-  const path = isNearPolicy(policy) ? '/v1/attestation/report' : '/v1/aci/attestation'
-  const query = isNearPolicy(policy) ? `?signing_algo=ed25519&nonce=${nonce}` : `?nonce=${nonce}`
-  const upstream = await upstreamFetch(upstreamUrl(policy, path, query), {
+  const upstream = await upstreamFetch(upstreamUrl(policy, attestationUpstreamPath(policy, nonce)), {
     headers: { accept: 'application/json' },
     redirect: 'manual',
   })
@@ -157,6 +177,77 @@ async function proxyAttestation(request: Request, upstreamFetch: FetchLike): Pro
   })
 }
 
+/**
+ * The per-protocol half of proxyChat. Each hook returns a Response to fail the
+ * request (or, for responseFailure, the relay) and null to continue.
+ */
+interface ChatStrategy {
+  headerFailure(headers: Headers): Response | null
+  validBody(parsed: unknown): boolean
+  setUpstreamHeaders(requestHeaders: Headers, upstream: Headers): void
+  responseFailure(upstream: Response, responseHeaders: Headers): Response | null
+}
+
+function nearChatStrategy(policy: NearModelPolicy): ChatStrategy {
+  return {
+    headerFailure(headers) {
+      if (headers.get('x-signing-algo') !== 'ed25519' || headers.get('x-encryption-version') !== '2') {
+        return jsonResponse({ error: 'Only NEAR Ed25519 E2EE v2 is accepted' }, 400)
+      }
+      return null
+    },
+    validBody: (parsed) => validNearEncryptedPrompt(parsed, policy),
+    setUpstreamHeaders(_requestHeaders, upstream) {
+      upstream.set('x-encryption-version', '2')
+      upstream.set('x-no-aliasing', 'true')
+      upstream.set('x-signing-algo', 'ed25519')
+    },
+    responseFailure: () => null,
+  }
+}
+
+function phalaChatStrategy(policy: PhalaModelPolicy): ChatStrategy {
+  return {
+    headerFailure(headers) {
+      const timestamp = Number(headers.get('x-e2ee-timestamp'))
+      if (headers.get('x-e2ee-version') !== '2'
+        || !HEX_32.test(headers.get('x-e2ee-nonce') ?? '')
+        || !Number.isSafeInteger(timestamp)
+        || Math.abs(Math.floor(Date.now() / 1000) - timestamp) > 300) {
+        return jsonResponse({ error: 'Only fresh Phala ACI E2EE v2 requests are accepted' }, 400)
+      }
+      return null
+    },
+    validBody: (parsed) => validPhalaEncryptedPrompt(parsed, policy),
+    setUpstreamHeaders(requestHeaders, upstream) {
+      upstream.set('x-e2ee-version', '2')
+      upstream.set('x-e2ee-nonce', requestHeaders.get('x-e2ee-nonce')!)
+      upstream.set('x-e2ee-timestamp', requestHeaders.get('x-e2ee-timestamp')!)
+    },
+    responseFailure(upstream, responseHeaders) {
+      const receiptId = upstream.headers.get('x-receipt-id') ?? ''
+      if (upstream.headers.get('x-e2ee-applied') !== 'true' || upstream.headers.get('x-e2ee-version') !== '2' || !RECEIPT_ID.test(receiptId)) {
+        return jsonResponse({ error: 'Phala response omitted required E2EE or receipt evidence', code: 'upstream_evidence_error' }, 502)
+      }
+      responseHeaders.set('x-e2ee-applied', 'true')
+      responseHeaders.set('x-e2ee-version', '2')
+      responseHeaders.set('x-receipt-id', receiptId)
+      return null
+    },
+  }
+}
+
+function chatStrategyFor(policy: ModelPolicy): ChatStrategy {
+  switch (policy.protocol) {
+    case 'near-e2ee-v2':
+      return nearChatStrategy(policy)
+    case 'phala-aci-v2':
+      return phalaChatStrategy(policy)
+    default:
+      return assertNever(policy)
+  }
+}
+
 async function proxyChat(request: Request, env: Env, upstreamFetch: FetchLike): Promise<Response> {
   if (request.method !== 'POST') return jsonResponse({ error: 'Method not allowed' }, 405)
   const accessFailure = await requireAccess(request, env)
@@ -165,22 +256,12 @@ async function proxyChat(request: Request, env: Env, upstreamFetch: FetchLike): 
   if (policy instanceof Response) return policy
   const apiKey = requireApiKey(env, policy)
   if (apiKey instanceof Response) return apiKey
+  const strategy = chatStrategyFor(policy)
   const clientKey = request.headers.get('x-client-pub-key') ?? ''
   const modelKey = request.headers.get('x-model-pub-key') ?? ''
   if (!HEX_32.test(clientKey) || !HEX_32.test(modelKey)) return jsonResponse({ error: 'Invalid encryption key headers' }, 400)
-  if (isNearPolicy(policy)) {
-    if (request.headers.get('x-signing-algo') !== 'ed25519' || request.headers.get('x-encryption-version') !== '2') {
-      return jsonResponse({ error: 'Only NEAR Ed25519 E2EE v2 is accepted' }, 400)
-    }
-  } else {
-    const timestamp = Number(request.headers.get('x-e2ee-timestamp'))
-    if (request.headers.get('x-e2ee-version') !== '2'
-      || !HEX_32.test(request.headers.get('x-e2ee-nonce') ?? '')
-      || !Number.isSafeInteger(timestamp)
-      || Math.abs(Math.floor(Date.now() / 1000) - timestamp) > 300) {
-      return jsonResponse({ error: 'Only fresh Phala ACI E2EE v2 requests are accepted' }, 400)
-    }
-  }
+  const headerFailure = strategy.headerFailure(request.headers)
+  if (headerFailure) return headerFailure
   let body: ArrayBuffer
   try {
     body = await boundedBody(request, MAX_CHAT_BYTES)
@@ -193,8 +274,7 @@ async function proxyChat(request: Request, env: Env, upstreamFetch: FetchLike): 
   } catch {
     return jsonResponse({ error: 'Malformed JSON' }, 400)
   }
-  const valid = isNearPolicy(policy) ? validNearEncryptedPrompt(parsed, policy) : validPhalaEncryptedPrompt(parsed, policy)
-  if (!valid) return jsonResponse({ error: 'Only the pinned encrypted prompt shape is accepted' }, 400)
+  if (!strategy.validBody(parsed)) return jsonResponse({ error: 'Only the pinned encrypted prompt shape is accepted' }, 400)
   const headers = new Headers({
     accept: 'application/json',
     'accept-encoding': 'identity',
@@ -203,15 +283,7 @@ async function proxyChat(request: Request, env: Env, upstreamFetch: FetchLike): 
     'x-client-pub-key': clientKey,
     'x-model-pub-key': modelKey,
   })
-  if (isNearPolicy(policy)) {
-    headers.set('x-encryption-version', '2')
-    headers.set('x-no-aliasing', 'true')
-    headers.set('x-signing-algo', 'ed25519')
-  } else {
-    headers.set('x-e2ee-version', '2')
-    headers.set('x-e2ee-nonce', request.headers.get('x-e2ee-nonce')!)
-    headers.set('x-e2ee-timestamp', request.headers.get('x-e2ee-timestamp')!)
-  }
+  strategy.setUpstreamHeaders(request.headers, headers)
   const upstream = await upstreamFetch(upstreamUrl(policy, '/v1/chat/completions'), {
     method: 'POST',
     headers,
@@ -225,15 +297,8 @@ async function proxyChat(request: Request, env: Env, upstreamFetch: FetchLike): 
   })
   const requestId = upstream.headers.get('x-request-id')
   if (requestId) responseHeaders.set('x-request-id', requestId)
-  if (!isNearPolicy(policy)) {
-    const receiptId = upstream.headers.get('x-receipt-id') ?? ''
-    if (upstream.headers.get('x-e2ee-applied') !== 'true' || upstream.headers.get('x-e2ee-version') !== '2' || !RECEIPT_ID.test(receiptId)) {
-      return jsonResponse({ error: 'Phala response omitted required E2EE or receipt evidence', code: 'upstream_evidence_error' }, 502)
-    }
-    responseHeaders.set('x-e2ee-applied', 'true')
-    responseHeaders.set('x-e2ee-version', '2')
-    responseHeaders.set('x-receipt-id', receiptId)
-  }
+  const responseFailure = strategy.responseFailure(upstream, responseHeaders)
+  if (responseFailure) return responseFailure
   return new Response(upstream.body, { status: upstream.status, headers: responseHeaders })
 }
 

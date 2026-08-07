@@ -4,15 +4,18 @@ import { verifyAttestation } from './attestation'
 import { NEAR_ATTESTATION_ALLOWED_FIELDS, NEAR_ATTESTATION_REQUIRED_FIELDS } from './attestation-schema'
 import { decryptFromModel, encryptForModel, generateClientKeys, sha256Hex, verifyEd25519Signature } from './crypto'
 import { bytesToHex, textEncoder } from './encoding'
-import { assert, assertPlainObject } from './guards'
+import { assert, assertNever, assertPlainObject } from './guards'
 import { accessHeaders, fetchJson } from './http'
 import { openE2eeChannel, verifyReportBinding, type AttestationReport as AciAttestationReport } from './phala-aci'
 import { verifyPhalaCompletionReceipt } from './phala-completion'
-import { canonicalPolicyText, getModelPolicy, isNearPolicy, type ModelId, type ModelPolicy, type NearModelPolicy, type PhalaModelPolicy } from './policy'
+import { canonicalPolicyText, getModelPolicy, type ModelId, type ModelPolicy, type NearModelPolicy, type PhalaModelPolicy } from './policy'
 import type { AttestationReport, CompletionResponse, NearTrustEvidence, PhalaGatewayEvidence, PhalaTrustEvidence, SignatureReport, TrustEvidence, VerifiedCompletion } from './types'
 import { runVerifierInWorker } from './verifier-worker'
 
-export type TrustStage = 'fetching' | 'cpu' | 'gpu' | 'ready'
+/** Progress through `policy.steps`: the index of the step now running, then 'ready'. */
+export type TrustProgress = number | 'ready'
+type OnStep = (step: number) => void
+
 export const EVIDENCE_TTL_MS = 5 * 60 * 1000
 const RECEIPT_ATTEMPTS = 6
 const RECEIPT_TIMEOUT_MS = 12_000
@@ -79,14 +82,15 @@ function verifyPhalaInWorker(report: AciAttestationReport, requestedNonce: strin
   )
 }
 
-async function establishNearTrust(policy: NearModelPolicy, onStage?: (stage: 'fetching' | 'cpu' | 'gpu') => void): Promise<NearTrustEvidence> {
+async function establishNearTrust(policy: NearModelPolicy, onStep?: OnStep): Promise<NearTrustEvidence> {
   const nonce = bytesToHex(randomBytes(32))
-  onStage?.('fetching')
+  onStep?.(0)
   const report = parseNearAttestationResponse(await fetchJson(`/api/attestation?model=${encodeURIComponent(policy.id)}&nonce=${encodeURIComponent(nonce)}`, { cache: 'no-store' }))
   assert(report.model_name === policy.model, `Attestation model mismatch: ${report.model_name}`)
   assert(report.signing_algo === 'ed25519', `Unsupported completion signature algorithm: ${report.signing_algo}`)
   assert(/^[0-9a-f]{64}$/i.test(report.signing_public_key), 'Invalid Ed25519 completion key')
-  const { cpu, gpu } = await verifyAttestation(report, nonce, policy, onStage)
+  const { cpu, gpu } = await verifyAttestation(report, nonce, policy, (stage) => onStep?.(stage === 'cpu' ? 1 : 2))
+  onStep?.(3)
   return {
     modelId: policy.id,
     provider: 'near-ai',
@@ -106,15 +110,16 @@ async function establishNearTrust(policy: NearModelPolicy, onStage?: (stage: 'fe
   }
 }
 
-async function establishPhalaTrust(policy: PhalaModelPolicy, onStage?: (stage: 'fetching' | 'cpu' | 'gpu') => void): Promise<PhalaTrustEvidence> {
+async function establishPhalaTrust(policy: PhalaModelPolicy, onStep?: OnStep): Promise<PhalaTrustEvidence> {
   const nonce = bytesToHex(randomBytes(32))
-  onStage?.('fetching')
+  onStep?.(0)
   const value = await fetchJson(`/api/attestation?model=${encodeURIComponent(policy.id)}&nonce=${encodeURIComponent(nonce)}`, { cache: 'no-store' })
   assertPlainObject(value, 'Invalid Phala ACI attestation response')
-  onStage?.('cpu')
+  // The worker performs the quote, dstack, and key-custody checks in one pass.
+  onStep?.(1)
   const report = value as unknown as AciAttestationReport
   const verified = await verifyPhalaInWorker(report, nonce, policy)
-  onStage?.('gpu')
+  onStep?.(3)
   return {
     modelId: policy.id,
     provider: 'phala-cloud',
@@ -131,12 +136,20 @@ async function establishPhalaTrust(policy: PhalaModelPolicy, onStage?: (stage: '
   }
 }
 
-export async function establishTrust(modelId: ModelId, onStage?: (stage: TrustStage) => void): Promise<TrustEvidence> {
+export async function establishTrust(modelId: ModelId, onProgress?: (progress: TrustProgress) => void): Promise<TrustEvidence> {
   const policy = getModelPolicy(modelId)
-  const evidence = isNearPolicy(policy)
-    ? await establishNearTrust(policy, onStage)
-    : await establishPhalaTrust(policy, onStage)
-  onStage?.('ready')
+  let evidence: TrustEvidence
+  switch (policy.protocol) {
+    case 'near-e2ee-v2':
+      evidence = await establishNearTrust(policy, onProgress)
+      break
+    case 'phala-aci-v2':
+      evidence = await establishPhalaTrust(policy, onProgress)
+      break
+    default:
+      return assertNever(policy)
+  }
+  onProgress?.('ready')
   return evidence
 }
 
@@ -276,10 +289,14 @@ export async function sendEncryptedPrompt(prompt: string, evidence: TrustEvidenc
   assert(cleanPrompt.length > 0 && cleanPrompt.length <= 2_000, 'Prompt must contain 1 to 2,000 characters')
   assert(accessToken.length >= 20, 'Access token is required')
   const policy = getModelPolicy(evidence.modelId)
-  if (isNearPolicy(policy)) {
-    assert(evidence.protocol === 'near-e2ee-v2', 'NEAR route requires NEAR trust evidence')
-    return sendNearPrompt(cleanPrompt, evidence, policy, accessToken)
+  switch (policy.protocol) {
+    case 'near-e2ee-v2':
+      assert(evidence.protocol === 'near-e2ee-v2', 'NEAR route requires NEAR trust evidence')
+      return sendNearPrompt(cleanPrompt, evidence, policy, accessToken)
+    case 'phala-aci-v2':
+      assert(evidence.protocol === 'phala-aci-v2', 'Phala route requires Phala ACI trust evidence')
+      return sendPhalaPrompt(cleanPrompt, evidence, policy, accessToken)
+    default:
+      return assertNever(policy)
   }
-  assert(evidence.protocol === 'phala-aci-v2', 'Phala route requires Phala ACI trust evidence')
-  return sendPhalaPrompt(cleanPrompt, evidence, policy, accessToken)
 }

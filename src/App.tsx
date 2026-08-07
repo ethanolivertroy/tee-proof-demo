@@ -1,17 +1,69 @@
 import { useEffect, useState, type FormEvent } from 'react'
-import { establishTrust, evidenceIsFresh, sendEncryptedPrompt, verifyDemoAccess, type TrustStage } from './lib/api'
+import { establishTrust, evidenceIsFresh, sendEncryptedPrompt, verifyDemoAccess, type TrustProgress } from './lib/api'
 import { shortHex } from './lib/encoding'
-import { DEFAULT_MODEL_ID, getModelPolicy, isNearPolicy, MODEL_OPTIONS, type ModelId } from './lib/policy'
+import { assertNever } from './lib/guards'
+import { DEFAULT_MODEL_ID, getModelPolicy, MODEL_OPTIONS, type ModelId } from './lib/policy'
 import type { CompletionReceipt, TrustEvidence } from './lib/types'
 
-type VerificationState = 'idle' | TrustStage | 'failed'
+type VerificationState = 'idle' | 'failed' | TrustProgress
+type CheckState = 'waiting' | 'working' | 'passed' | 'failed'
 
-function StatusMark({ state }: { state: 'waiting' | 'working' | 'passed' | 'failed' }) {
+function stepState(verification: VerificationState, index: number): CheckState {
+  if (verification === 'failed') return 'failed'
+  if (verification === 'ready') return 'passed'
+  if (verification === 'idle') return 'waiting'
+  if (index < verification) return 'passed'
+  return index === verification ? 'working' : 'waiting'
+}
+
+interface EvidenceRow {
+  term: string
+  value: string
+  code?: boolean
+}
+
+function evidenceRows(evidence: TrustEvidence): EvidenceRow[] {
+  const identity: EvidenceRow[] = [
+    { term: 'Provider', value: getModelPolicy(evidence.modelId).providerLabel },
+    { term: 'Model', value: evidence.model },
+  ]
+  const validity: EvidenceRow[] = [
+    { term: 'Expires', value: new Date(evidence.expiresAt).toLocaleTimeString() },
+  ]
+  const challenge: EvidenceRow[] = [
+    { term: 'Policy', value: shortHex(evidence.policyDigest), code: true },
+    { term: 'Nonce', value: shortHex(evidence.nonce), code: true },
+  ]
+  switch (evidence.protocol) {
+    case 'near-e2ee-v2':
+      return [
+        ...identity,
+        { term: 'TDX status', value: evidence.cpu.tcbStatus },
+        { term: 'GPU model', value: evidence.gpu.models.join(', ') },
+        ...validity,
+        { term: 'Quote', value: shortHex(evidence.cpu.quoteHash), code: true },
+        ...challenge,
+      ]
+    case 'phala-aci-v2':
+      return [
+        ...identity,
+        { term: 'TDX status', value: evidence.gateway.tcbStatus },
+        { term: 'Workload', value: shortHex(evidence.gateway.workloadId), code: true },
+        ...validity,
+        { term: 'Quote', value: shortHex(evidence.gateway.quoteHash), code: true },
+        ...challenge,
+      ]
+    default:
+      return assertNever(evidence)
+  }
+}
+
+function StatusMark({ state }: { state: CheckState }) {
   const symbols = { waiting: '·', working: '↻', passed: '✓', failed: '!' }
   return <span className={`status-mark status-${state}`} aria-hidden="true">{symbols[state]}</span>
 }
 
-function CheckRow({ label, detail, state }: { label: string; detail: string; state: 'waiting' | 'working' | 'passed' | 'failed' }) {
+function CheckRow({ label, detail, state }: { label: string; detail: string; state: CheckState }) {
   return (
     <div className="check-row">
       <StatusMark state={state} />
@@ -51,7 +103,6 @@ function App() {
   const [sending, setSending] = useState(false)
   const [clock, setClock] = useState(Date.now())
   const policy = getModelPolicy(modelId)
-  const near = isNearPolicy(policy)
 
   useEffect(() => {
     const timer = window.setInterval(() => setClock(Date.now()), 10_000)
@@ -60,9 +111,7 @@ function App() {
 
   const fresh = evidence ? evidenceIsFresh(evidence, clock) : false
   const ready = accessGranted && verification === 'ready' && fresh && evidence?.modelId === modelId
-  const verifying = ['fetching', 'cpu', 'gpu'].includes(verification)
-  const cpuPassed = verification === 'gpu' || verification === 'ready'
-  const platformPassed = verification === 'ready'
+  const verifying = typeof verification === 'number'
 
   function resetProof(nextModelId = modelId) {
     setModelId(nextModelId)
@@ -95,7 +144,7 @@ function App() {
     setAnswer('')
     setReceipt(null)
     setError('')
-    setVerification('fetching')
+    setVerification(0)
     try {
       const result = await establishTrust(modelId, setVerification)
       setEvidence(result)
@@ -188,31 +237,23 @@ function App() {
           <aside className="proof-panel">
             <div className="panel-heading"><div><p className="panel-kicker">Step 1</p><h2>Trust the evidence</h2></div><StatusMark state={proofState} /></div>
             <div className="checks" aria-live="polite">
-              <CheckRow label="Fresh challenge" detail="32-byte browser nonce" state={verification === 'idle' ? 'waiting' : verification === 'failed' ? 'failed' : verification === 'fetching' ? 'working' : 'passed'} />
-              <CheckRow label="Intel TDX" detail={near ? 'Quote, debug state, and measurements' : 'Gateway quote, event log, and measurements'} state={verification === 'cpu' ? 'working' : cpuPassed ? 'passed' : verification === 'failed' ? 'failed' : 'waiting'} />
-              <CheckRow label={near ? 'NVIDIA GPU' : 'dstack + KMS'} detail={near ? `${policy.gpuCount} ${policy.gpuArchitecture.toLowerCase()} devices, signed verdicts` : 'Measured source, Compose, and key custody'} state={verification === 'gpu' ? 'working' : platformPassed ? 'passed' : verification === 'failed' ? 'failed' : 'waiting'} />
-              <CheckRow label={near ? 'Model key' : 'Gateway keys'} detail={near ? 'Bound to nonce and approved workload' : 'E2EE and receipt keys bound to quote'} state={platformPassed ? 'passed' : verification === 'failed' ? 'failed' : 'waiting'} />
+              {policy.steps.map((step, index) => (
+                <CheckRow key={step.label} label={step.label} detail={step.detail} state={stepState(verification, index)} />
+              ))}
             </div>
             <button className="primary-button verify-button" type="button" onClick={verify} disabled={!accessGranted || verifying || sending}>{verifying ? 'Verifying environment…' : ready ? 'Verify again' : 'Verify environment'}</button>
             {!accessGranted && <p className="locked-help">Unlock the owner gate before verifying.</p>}
             {evidence && ready && (
               <details className="evidence-details">
                 <summary>Verified evidence</summary>
-                {evidence.protocol === 'near-e2ee-v2' ? (
-                  <dl>
-                    <div><dt>Provider</dt><dd>NEAR AI Cloud</dd></div><div><dt>Model</dt><dd>{evidence.model}</dd></div>
-                    <div><dt>TDX status</dt><dd>{evidence.cpu.tcbStatus}</dd></div><div><dt>GPU model</dt><dd>{evidence.gpu.models.join(', ')}</dd></div>
-                    <div><dt>Expires</dt><dd>{new Date(evidence.expiresAt).toLocaleTimeString()}</dd></div><div><dt>Quote</dt><dd><code>{shortHex(evidence.cpu.quoteHash)}</code></dd></div>
-                    <div><dt>Policy</dt><dd><code>{shortHex(evidence.policyDigest)}</code></dd></div><div><dt>Nonce</dt><dd><code>{shortHex(evidence.nonce)}</code></dd></div>
-                  </dl>
-                ) : (
-                  <dl>
-                    <div><dt>Provider</dt><dd>Phala Cloud</dd></div><div><dt>Model</dt><dd>{evidence.model}</dd></div>
-                    <div><dt>TDX status</dt><dd>{evidence.gateway.tcbStatus}</dd></div><div><dt>Workload</dt><dd><code>{shortHex(evidence.gateway.workloadId)}</code></dd></div>
-                    <div><dt>Expires</dt><dd>{new Date(evidence.expiresAt).toLocaleTimeString()}</dd></div><div><dt>Quote</dt><dd><code>{shortHex(evidence.gateway.quoteHash)}</code></dd></div>
-                    <div><dt>Policy</dt><dd><code>{shortHex(evidence.policyDigest)}</code></dd></div><div><dt>Nonce</dt><dd><code>{shortHex(evidence.nonce)}</code></dd></div>
-                  </dl>
-                )}
+                <dl>
+                  {evidenceRows(evidence).map((row) => (
+                    <div key={row.term}>
+                      <dt>{row.term}</dt>
+                      <dd>{row.code ? <code>{row.value}</code> : row.value}</dd>
+                    </div>
+                  ))}
+                </dl>
               </details>
             )}
           </aside>

@@ -2,6 +2,14 @@ export function assert(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message)
 }
 
+/**
+ * Exhaustiveness backstop for switches over discriminated unions: a newly
+ * added variant fails to compile until every dispatch site handles it.
+ */
+export function assertNever(value: never): never {
+  throw new Error(`Unhandled variant: ${JSON.stringify(value)}`)
+}
+
 export function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
 }

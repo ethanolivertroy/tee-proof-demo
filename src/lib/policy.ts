@@ -19,6 +19,12 @@ export interface PhalaGatewayMeasurements {
   mrConfigId: string
 }
 
+/** One row of the verification checklist the UI renders for a policy. */
+export interface TrustStep {
+  label: string
+  detail: string
+}
+
 interface BaseModelPolicy {
   id: string
   label: string
@@ -27,6 +33,8 @@ interface BaseModelPolicy {
   provider: ProviderId
   providerLabel: string
   capturedAt: string
+  /** Provider copy for the verification checklist, in completion order. */
+  steps: readonly TrustStep[]
 }
 
 export interface NearModelPolicy extends BaseModelPolicy {
@@ -86,6 +94,9 @@ const PHALA_GATEWAY_PROFILE: PhalaGatewayMeasurements = {
   mrConfigId: '014496101140734539fb1e72c22252a0ba9992e3822b64d333a2452357a4adf0bb000000000000000000000000000000',
 }
 
+const NEAR_GPU_ARCHITECTURE = 'HOPPER'
+const NEAR_GPU_COUNT = 8
+
 export const MODEL_POLICIES = {
   'deepseek-v4-flash': {
     id: 'deepseek-v4-flash',
@@ -96,9 +107,15 @@ export const MODEL_POLICIES = {
     providerLabel: 'NEAR AI Cloud',
     protocol: 'near-e2ee-v2',
     capturedAt: '2026-08-02',
-    gpuArchitecture: 'HOPPER',
-    gpuCount: 8,
+    gpuArchitecture: NEAR_GPU_ARCHITECTURE,
+    gpuCount: NEAR_GPU_COUNT,
     measurementProfiles: [NEAR_SHARED_PROFILE, DEEPSEEK_PROFILE],
+    steps: [
+      { label: 'Fresh challenge', detail: '32-byte browser nonce' },
+      { label: 'Intel TDX', detail: 'Quote, debug state, and measurements' },
+      { label: 'NVIDIA GPU', detail: `${NEAR_GPU_COUNT} ${NEAR_GPU_ARCHITECTURE.toLowerCase()} devices, signed verdicts` },
+      { label: 'Model key', detail: 'Bound to nonce and approved workload' },
+    ],
   },
   'phala-gpt-oss-20b': {
     id: 'phala-gpt-oss-20b',
@@ -109,6 +126,12 @@ export const MODEL_POLICIES = {
     providerLabel: 'Phala Cloud',
     protocol: 'phala-aci-v2',
     capturedAt: '2026-08-06',
+    steps: [
+      { label: 'Fresh challenge', detail: '32-byte browser nonce' },
+      { label: 'Intel TDX', detail: 'Gateway quote, event log, and measurements' },
+      { label: 'dstack + KMS', detail: 'Measured source, Compose, and key custody' },
+      { label: 'Gateway keys', detail: 'E2EE and receipt keys bound to quote' },
+    ],
     workloadId: 'sha256:3def476b72026924f9d88f7b339b2e211553fc2486c6a974d5f330162f183eda',
     expectedSubject: null,
     e2eeAlgorithm: 'x25519-aes-256-gcm-hkdf-sha256',
