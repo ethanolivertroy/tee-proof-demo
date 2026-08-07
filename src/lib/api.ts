@@ -10,6 +10,7 @@ import { openE2eeChannel, verifyReportBinding, type AttestationReport as AciAtte
 import { verifyPhalaCompletionReceipt } from './phala-completion'
 import { canonicalPolicyText, getModelPolicy, isNearPolicy, type ModelId, type ModelPolicy, type NearModelPolicy, type PhalaModelPolicy } from './policy'
 import type { AttestationReport, CompletionResponse, NearTrustEvidence, PhalaGatewayEvidence, PhalaTrustEvidence, SignatureReport, TrustEvidence, VerifiedCompletion } from './types'
+import { runVerifierInWorker } from './verifier-worker'
 
 export type TrustStage = 'fetching' | 'cpu' | 'gpu' | 'ready'
 export const EVIDENCE_TTL_MS = 5 * 60 * 1000
@@ -70,25 +71,11 @@ export function parseNearAttestationResponse(value: unknown): AttestationReport 
 }
 
 function verifyPhalaInWorker(report: AciAttestationReport, requestedNonce: string, policy: PhalaModelPolicy): Promise<{ evidence: PhalaGatewayEvidence; expiresAt: string }> {
-  return new Promise((resolve, reject) => {
-    const worker = new Worker(new URL('./phala-verifier.worker.ts', import.meta.url), { type: 'module' })
-    const timer = window.setTimeout(() => {
-      worker.terminate()
-      reject(new Error('Phala ACI verifier timed out'))
-    }, 90_000)
-    worker.onmessage = (event: MessageEvent<{ ok: boolean; evidence?: PhalaGatewayEvidence; expiresAt?: string; error?: string }>) => {
-      window.clearTimeout(timer)
-      worker.terminate()
-      if (!event.data.ok || !event.data.evidence || !event.data.expiresAt) reject(new Error(event.data.error ?? 'Phala ACI verification failed'))
-      else resolve({ evidence: event.data.evidence, expiresAt: event.data.expiresAt })
-    }
-    worker.onerror = () => {
-      window.clearTimeout(timer)
-      worker.terminate()
-      reject(new Error('Phala ACI verifier worker failed'))
-    }
-    worker.postMessage({ report, requestedNonce, policy })
-  })
+  return runVerifierInWorker(
+    () => new Worker(new URL('./phala-verifier.worker.ts', import.meta.url), { type: 'module' }),
+    { report, requestedNonce, policy },
+    'Phala ACI verification',
+  )
 }
 
 async function establishNearTrust(policy: NearModelPolicy, onStage?: (stage: 'fetching' | 'cpu' | 'gpu') => void): Promise<NearTrustEvidence> {

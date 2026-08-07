@@ -2,7 +2,8 @@
 
 import { verifyCpuAttestation } from './cpu-verifier-core'
 import type { NearModelPolicy } from './policy'
-import type { AttestationReport, CpuEvidence } from './types'
+import type { AttestationReport } from './types'
+import { wireVerifierWorker } from './verifier-worker'
 
 interface CpuWorkerRequest {
   report: AttestationReport
@@ -10,21 +11,7 @@ interface CpuWorkerRequest {
   policy: NearModelPolicy
 }
 
-interface CpuWorkerReply {
-  ok: boolean
-  evidence?: CpuEvidence
-  error?: string
-}
-
-self.onmessage = async (event: MessageEvent<CpuWorkerRequest>) => {
-  let reply: CpuWorkerReply
-  try {
-    reply = {
-      ok: true,
-      evidence: await verifyCpuAttestation(event.data.report, event.data.requestedNonce, event.data.policy),
-    }
-  } catch (error) {
-    reply = { ok: false, error: error instanceof Error ? error.message : 'Intel quote verification failed' }
-  }
-  self.postMessage(reply)
-}
+wireVerifierWorker(
+  (request: CpuWorkerRequest) => verifyCpuAttestation(request.report, request.requestedNonce, request.policy),
+  'Intel quote verification failed',
+)

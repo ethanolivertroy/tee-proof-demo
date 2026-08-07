@@ -4,12 +4,7 @@ import { bytesToHex, textEncoder } from './encoding'
 import { asRecord, assert } from './guards'
 import { NVIDIA_ISSUER, NVIDIA_JWKS, type NearModelPolicy } from './policy'
 import type { AttestationReport, CpuEvidence, GpuEvidence } from './types'
-
-interface CpuWorkerReply {
-  ok: boolean
-  evidence?: CpuEvidence
-  error?: string
-}
+import { runVerifierInWorker } from './verifier-worker'
 
 function claimIsTrue(payload: JWTPayload, name: string): void {
   assert(payload[name] === true, `NVIDIA claim failed: ${name}`)
@@ -60,26 +55,11 @@ function verifyDeviceClaims(payload: JWTPayload, deviceName: string, nonce: stri
 }
 
 function verifyCpuInWorker(report: AttestationReport, requestedNonce: string, policy: NearModelPolicy): Promise<CpuEvidence> {
-  return new Promise((resolve, reject) => {
-    const worker = new Worker(new URL('./cpu-verifier.worker.ts', import.meta.url), { type: 'module' })
-    const timer = window.setTimeout(() => {
-      worker.terminate()
-      reject(new Error('Intel quote verification timed out'))
-    }, 90_000)
-
-    worker.onmessage = (event: MessageEvent<CpuWorkerReply>) => {
-      window.clearTimeout(timer)
-      worker.terminate()
-      if (!event.data.ok || !event.data.evidence) reject(new Error(event.data.error ?? 'Intel quote verification failed'))
-      else resolve(event.data.evidence)
-    }
-    worker.onerror = () => {
-      window.clearTimeout(timer)
-      worker.terminate()
-      reject(new Error('Intel quote verifier worker failed'))
-    }
-    worker.postMessage({ report, requestedNonce, policy })
-  })
+  return runVerifierInWorker(
+    () => new Worker(new URL('./cpu-verifier.worker.ts', import.meta.url), { type: 'module' }),
+    { report, requestedNonce, policy },
+    'Intel quote verification',
+  )
 }
 
 async function verifyGpuAttestation(
