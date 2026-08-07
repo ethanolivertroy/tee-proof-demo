@@ -13,6 +13,11 @@ const EXACT_NEAR_CHAT_KEYS = new Set(['model', 'messages', 'max_tokens', 'stream
 const EXACT_PHALA_CHAT_KEYS = new Set(['model', 'messages', 'max_tokens', 'stream', 'provider'])
 const EXACT_PROVIDER_KEYS = new Set(['aci_verified'])
 const EXACT_MESSAGE_KEYS = new Set(['role', 'content'])
+// Smallest well-formed sealed field per envelope layout: ephemeral X25519
+// public key + cipher nonce + AEAD tag, plus one plaintext byte for NEAR,
+// whose prompts are never empty (XChaCha20-Poly1305; Phala uses AES-256-GCM).
+const NEAR_CIPHERTEXT_MIN_BYTES = 32 + 24 + 16 + 1
+const PHALA_CIPHERTEXT_MIN_BYTES = 32 + 12 + 16
 // GPU evidence this Worker relays to NVIDIA NRAS: exactly the architecture and
 // device-count pairs the NEAR policies pin. policy.ts stays the single source
 // of measurement truth.
@@ -133,7 +138,7 @@ function validNearEncryptedPrompt(value: unknown, policy: ModelPolicy): boolean 
   if (!Array.isArray(value.messages) || value.messages.length !== 1) return false
   const message: unknown = value.messages[0]
   if (!isRecord(message)) return false
-  return hasOnlyKeys(message, EXACT_MESSAGE_KEYS) && message.role === 'user' && validCiphertext(message.content, 73)
+  return hasOnlyKeys(message, EXACT_MESSAGE_KEYS) && message.role === 'user' && validCiphertext(message.content, NEAR_CIPHERTEXT_MIN_BYTES)
 }
 
 function validPhalaEncryptedPrompt(value: unknown, policy: PhalaModelPolicy): boolean {
@@ -145,7 +150,7 @@ function validPhalaEncryptedPrompt(value: unknown, policy: PhalaModelPolicy): bo
   if (!Array.isArray(value.messages) || value.messages.length !== 1) return false
   const message: unknown = value.messages[0]
   if (!isRecord(message)) return false
-  return hasOnlyKeys(message, EXACT_MESSAGE_KEYS) && message.role === 'user' && validCiphertext(message.content, 60)
+  return hasOnlyKeys(message, EXACT_MESSAGE_KEYS) && message.role === 'user' && validCiphertext(message.content, PHALA_CIPHERTEXT_MIN_BYTES)
 }
 
 function attestationUpstreamPath(policy: ModelPolicy, nonce: string): string {
