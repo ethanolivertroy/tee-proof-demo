@@ -63,10 +63,32 @@ export function decryptFromModel(encryptedHex: string, clientX25519SecretKey: Ui
   return textDecoder.decode(open(hexToBytes(encryptedHex), clientX25519SecretKey))
 }
 
-export function verifyEd25519Signature(signatureHex: string, message: string, publicKeyHex: string): boolean {
-  return ed25519.verify(hexToBytes(signatureHex), textEncoder.encode(message), hexToBytes(publicKeyHex))
+/**
+ * Strict RFC 8032 Ed25519 verification (zip215 off, matching Web Crypto's
+ * acceptance). Returns false, never throws, on malformed key or signature
+ * material, so verifiers can report it as a failed check.
+ */
+export function verifyEd25519Bytes(signature: Uint8Array, message: Uint8Array, publicKey: Uint8Array): boolean {
+  try {
+    return ed25519.verify(signature, message, publicKey, { zip215: false })
+  } catch {
+    return false
+  }
 }
 
-export function sha256Hex(value: string): string {
-  return bytesToHex(sha256(textEncoder.encode(value)))
+export function verifyEd25519Signature(signatureHex: string, message: string, publicKeyHex: string): boolean {
+  return verifyEd25519Bytes(hexToBytes(signatureHex), textEncoder.encode(message), hexToBytes(publicKeyHex))
+}
+
+/**
+ * Normalize a secp256k1 recoverable-signature recovery id, accepting the
+ * Ethereum-style 27-30 offset. Returns null when the id is out of range.
+ */
+export function normalizeSecp256k1RecoveryId(value: number): number | null {
+  const recovery = value >= 27 && value <= 30 ? value - 27 : value
+  return recovery >= 0 && recovery <= 3 ? recovery : null
+}
+
+export function sha256Hex(value: string | Uint8Array): string {
+  return bytesToHex(sha256(typeof value === 'string' ? textEncoder.encode(value) : value))
 }

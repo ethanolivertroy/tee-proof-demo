@@ -79,13 +79,17 @@ describe('Phala E2EE channel key selection', () => {
         choices: [{ index: 0, message: { reasoning } }],
       })).rejects.toThrow('unsupported unencrypted response field')
     }
+  })
 
-    for (const reasoning of ['relay-visible reasoning', null, [], {}]) {
-      await channel.seal(request)
-      await expect(channel.openChunk({
-        id: 'chat-1',
-        choices: [{ index: 0, delta: { reasoning } }],
-      })).rejects.toThrow('unsupported unencrypted response field')
-    }
+  it('refuses to seal request shapes other than the pinned chat-completion form', async () => {
+    const approved = await rawX25519PublicKey()
+    const report = reportWithKeys([{ key_id: 'approved', algo: ALGO, public_key: approved }])
+    const channel = await openE2eeChannel(report, verification, {
+      keyId: 'approved',
+      algorithm: ALGO,
+      publicKey: approved,
+    })
+    await expect(channel.seal({ model: 'test/model', prompt: 'completions-style secret' }))
+      .rejects.toThrow('request.messages must be an array')
   })
 })

@@ -1,70 +1,57 @@
 /**
- * Adapted ACI verifier primitives for this demo's reviewed Phala profile.
+ * ACI verifier primitives for this demo's reviewed Phala profile.
  *
  * Level 1 receipt verification (§10.2) is implemented against an established
  * keyset. {@link verifyReportBinding} adds the cryptographic-binding checks of
- * Level 2 (§10.1 checks 2–6); hardware quote, key custody, and provenance checks
- * (§10.1 checks 1, 7–10) are composed in `phala-verifier-core.ts`. SHA-256 and
- * Ed25519 use Web Crypto; secp256k1 uses `@noble/curves`.
+ * Level 2 (§10.1 checks 2-6); hardware quote, key custody, and provenance checks
+ * (§10.1 checks 1, 7-10) are composed in `phala-verifier-core.ts`. Hashing and
+ * signature verification use the same `@noble` primitives as the rest of
+ * src/lib (see ../crypto and ../encoding); the E2EE channel uses Web Crypto
+ * X25519 + AES-GCM.
  */
 
 // Canonicalization (§3)
-export { canonicalize, jcsBytes } from './jcs.js';
-export type { JcsValue } from './jcs.js';
+export { canonicalize, jcsBytes } from './jcs'
+export type { JcsValue } from './jcs'
 
-// Crypto primitives (Web Crypto plus @noble/curves secp256k1)
-export {
-  sha256,
-  sha256Hex,
-  sha256Prefixed,
-  verifyEd25519,
-  verifySignature,
-  toHex,
-  fromHex,
-} from './crypto.js';
+// Signature verification under attested keys, and ACI's error-typed hex decoding
+export { fromHex, verifySignature } from './crypto'
 
 // Digest & canonical-signing-bytes constructions (§4, §8.5, §9.2)
 export {
-  computeWorkloadId,
   computeKeysetDigest,
-  attestationStatement,
   computeReportData,
-  keysetEndorsementPayload,
-  keysetRevocationPayload,
-  receiptSigningBytes,
-  sessionMaterial,
   computeSessionId,
-} from './digest.js';
+  computeWorkloadId,
+  keysetEndorsementPayload,
+  receiptSigningBytes,
+  sha256Prefixed,
+} from './digest'
 
 // E2EE AAD builders (§7.3)
-export {
-  requestAad,
-  requestAadString,
-  responseAad,
-  responseAadString,
-} from './e2ee.js';
-export type { AadCommon } from './e2ee.js';
+export { requestAad, responseAad } from './e2ee'
+export type { AadCommon } from './e2ee'
 
-// E2EE channel to a verified workload — encrypt requests, decrypt replies (§7)
-export { openE2eeChannel } from './e2ee-channel.js';
-export type { ApprovedE2eeKey, E2eeChannel } from './e2ee-channel.js';
+// E2EE channel to a verified workload: encrypt requests, decrypt replies (§7)
+export { openE2eeChannel } from './e2ee-channel'
+export type { ApprovedE2eeKey, E2eeChannel } from './e2ee-channel'
 
 // Level 1 receipt verification (§10.2)
 export {
-  verifyReceipt,
+  checkRequestBodyHash,
+  checkResponseCleartextHash,
+  checkResponseWireHash,
   findEvent,
   hashBody,
-  checkRequestBodyHash,
-  checkResponseWireHash,
-  checkResponseCleartextHash,
-} from './receipt.js';
+  verifyReceipt,
+} from './receipt'
 
-// Level 2 report-binding checks (§10.1 checks 2–6, no hardware quote)
-export { verifyReportBinding } from './report.js';
-export type { ReportBindingOptions } from './report.js';
+// Level 2 report-binding checks (§10.1 checks 2-6, no hardware quote)
+export { verifyReportBinding } from './report'
+export type { ReportBindingOptions } from './report'
 
 // Errors
-export { AciError, AciFormatError, UnsupportedAlgorithmError } from './errors.js';
+export { AciError, AciFormatError, UnsupportedAlgorithmError } from './errors'
 
 // Wire & result types
 export type {
@@ -83,4 +70,4 @@ export type {
   Check,
   ReceiptVerification,
   ReportVerification,
-} from './types.js';
+} from './types'

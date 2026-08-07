@@ -2,39 +2,26 @@
  * E2EE associated-data (AAD) builders (§7.3). The AAD binds each ciphertext to
  * its field path and request context; it is the JCS of a purpose-tagged object,
  * so no component needs bespoke escaping. Provided here because clients that
- * encrypt fields need the exact bytes — the verifier itself does not decrypt.
- * The X25519 and secp256k1 suites share these builders; `algo` is just a field.
+ * encrypt fields need the exact bytes; the verifier itself does not decrypt.
  */
 
-import { canonicalize, jcsBytes } from './jcs.js';
+import { jcsBytes } from './jcs'
 
 /** Inputs shared by request and response AAD (§7.3). */
 export interface AadCommon {
   /** `algo` of the selected service E2EE key. */
-  algo: string;
+  algo: string
   /** The request's top-level `model`, byte-exact. */
-  model: string;
+  model: string
   /** The encrypted location's field path, e.g. `messages.0.content` (§7.2). */
-  field: string;
+  field: string
   /** The request's `X-E2EE-Nonce` (string). */
-  nonce: string;
+  nonce: string
   /** The request's `X-E2EE-Timestamp` (Unix seconds, integer). */
-  ts: number;
+  ts: number
 }
 
-/** Request AAD (§7.3), tag `aci.e2ee.request.v2`. Returns the canonical JCS string. */
-export function requestAadString(params: AadCommon): string {
-  return canonicalize({
-    purpose: 'aci.e2ee.request.v2',
-    algo: params.algo,
-    model: params.model,
-    field: params.field,
-    nonce: params.nonce,
-    ts: params.ts,
-  });
-}
-
-/** Request AAD as UTF-8 bytes — the value passed to AES-GCM. */
+/** Request AAD (§7.3), tag `aci.e2ee.request.v2`, as the UTF-8 JCS bytes passed to AES-GCM. */
 export function requestAad(params: AadCommon): Uint8Array {
   return jcsBytes({
     purpose: 'aci.e2ee.request.v2',
@@ -43,23 +30,10 @@ export function requestAad(params: AadCommon): Uint8Array {
     field: params.field,
     nonce: params.nonce,
     ts: params.ts,
-  });
+  })
 }
 
 /** Response AAD (§7.3), tag `aci.e2ee.response.v2`. Adds the response `id` (`""` when none). */
-export function responseAadString(params: AadCommon & { id: string }): string {
-  return canonicalize({
-    purpose: 'aci.e2ee.response.v2',
-    algo: params.algo,
-    model: params.model,
-    id: params.id,
-    field: params.field,
-    nonce: params.nonce,
-    ts: params.ts,
-  });
-}
-
-/** Response AAD as UTF-8 bytes — the value passed to AES-GCM. */
 export function responseAad(params: AadCommon & { id: string }): Uint8Array {
   return jcsBytes({
     purpose: 'aci.e2ee.response.v2',
@@ -69,5 +43,5 @@ export function responseAad(params: AadCommon & { id: string }): Uint8Array {
     field: params.field,
     nonce: params.nonce,
     ts: params.ts,
-  });
+  })
 }

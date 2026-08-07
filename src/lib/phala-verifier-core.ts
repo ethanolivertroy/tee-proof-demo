@@ -1,8 +1,9 @@
 import { getCollateralAndVerify } from '@phala/dcap-qvl'
+import { sha256Hex } from './crypto'
 import { bytesToHex, concatBytes, equalBytes, hexToBytes } from './encoding'
 import { assert } from './guards'
 import { verifyDstackEvidence } from './phala-dstack'
-import { verifyReportBinding, sha256Hex, type AttestationReport as AciAttestationReport } from './phala-aci'
+import { verifyReportBinding, type AttestationReport as AciAttestationReport } from './phala-aci'
 import type { PhalaModelPolicy } from './policy'
 import type { PhalaGatewayEvidence } from './types'
 
@@ -80,7 +81,7 @@ export async function verifyPhalaGateway(
   const capabilities = (report as unknown as { service_capabilities?: { supported_e2ee_versions?: unknown } }).service_capabilities
   assert(Array.isArray(capabilities?.supported_e2ee_versions) && capabilities.supported_e2ee_versions.includes('2'), 'Phala ACI E2EE v2 is unavailable')
 
-  const binding = await verifyReportBinding(report, requestedNonce, { trustPlatformClock: true })
+  const binding = verifyReportBinding(report, requestedNonce, { trustPlatformClock: true })
   assert(binding.ok, `Phala ACI report binding failed: ${binding.checks.filter((check) => !check.ok).map((check) => check.name).join(', ')}`)
   assert(binding.workloadId === policy.workloadId, 'Derived Phala workload id is not approved')
 
@@ -121,7 +122,7 @@ export async function verifyPhalaGateway(
     expiresAt: new Date(expiresAtSeconds * 1000).toISOString(),
     evidence: {
       quoteAuthentic: true,
-      quoteHash: await sha256Hex(hexToBytes(evidence.quote)),
+      quoteHash: sha256Hex(hexToBytes(evidence.quote)),
       tcbStatus: verifiedQuote.status,
       advisoryIds: [...verifiedQuote.advisory_ids],
       quoteType: td.type,

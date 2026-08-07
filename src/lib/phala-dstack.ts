@@ -1,6 +1,7 @@
 import { secp256k1 } from '@noble/curves/secp256k1.js'
 import { sha256, sha384 } from '@noble/hashes/sha2.js'
 import { keccak_256 } from '@noble/hashes/sha3.js'
+import { normalizeSecp256k1RecoveryId } from './crypto'
 import { bytesToHex, concatBytes, equalBytes, hexToBytes, textEncoder } from './encoding'
 import { assert, isRecord } from './guards'
 import type { PhalaModelPolicy } from './policy'
@@ -70,9 +71,8 @@ function oneBeforeSystemReady(events: readonly DstackEvent[], name: string): Dst
 function recoverKmsPublicKey(message: Uint8Array, signatureHex: string): Uint8Array {
   const signature = hexToBytes(signatureHex)
   assert(signature.length === 65, `KMS signature must be 65 bytes, got ${signature.length}`)
-  let recovery = signature[64]!
-  if (recovery >= 27 && recovery <= 30) recovery -= 27
-  assert(recovery <= 3, 'Invalid KMS recovery id')
+  const recovery = normalizeSecp256k1RecoveryId(signature[64]!)
+  assert(recovery !== null, 'Invalid KMS recovery id')
   return secp256k1.Signature
     .fromBytes(signature.slice(0, 64), 'compact')
     .addRecoveryBit(recovery)

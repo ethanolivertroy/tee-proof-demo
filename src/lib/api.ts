@@ -226,7 +226,7 @@ async function sendNearPrompt(prompt: string, evidence: NearTrustEvidence, polic
 }
 
 async function sendPhalaPrompt(prompt: string, evidence: PhalaTrustEvidence, policy: PhalaModelPolicy, accessToken: string): Promise<VerifiedCompletion> {
-  const binding = await verifyReportBinding(evidence.raw, evidence.nonce, { trustPlatformClock: true })
+  const binding = verifyReportBinding(evidence.raw, evidence.nonce, { trustPlatformClock: true })
   assert(binding.ok && binding.workloadKeysetDigest === evidence.gateway.workloadKeysetDigest, 'Phala keyset no longer matches verified trust evidence')
   const channel = await openE2eeChannel(evidence.raw, binding, {
     keyId: evidence.gateway.e2eeKeyId,

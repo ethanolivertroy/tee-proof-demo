@@ -78,15 +78,15 @@ export async function verifyPhalaCompletionReceipt(input: {
   assert(receipt.event_log[0]?.type === 'request.received', 'Phala receipt does not begin with request.received')
   assert(receipt.signature.key_id === input.policy.receiptKeyId && receipt.signature.algo === input.policy.receiptAlgorithm, 'Phala receipt used an unapproved signing key')
 
-  const signature = await verifyReceipt(receipt, input.keyset)
+  const signature = verifyReceipt(receipt, input.keyset)
   assert(signature.ok, `Phala receipt signature failed: ${signature.checks.filter((check) => !check.ok).map((check) => check.name).join(', ')}`)
-  assert(await checkRequestBodyHash(receipt, input.plaintextRequestBody), 'Phala receipt request hash mismatch')
-  assert(await checkResponseWireHash(receipt, input.responseWireBody), 'Phala receipt response wire hash mismatch')
+  assert(checkRequestBodyHash(receipt, input.plaintextRequestBody), 'Phala receipt request hash mismatch')
+  assert(checkResponseWireHash(receipt, input.responseWireBody), 'Phala receipt response wire hash mismatch')
   // `cleartext_hash` covers the provider's exact upstream serialization. After
   // field-level E2EE decryption the browser has the same logical JSON but not the
   // original whitespace/key-order bytes, so expose this comparison as a signed
   // diagnostic rather than treating reserialization drift as a trust failure.
-  const cleartextResponseHashMatched = await checkResponseCleartextHash(receipt, input.responseCleartextBody)
+  const cleartextResponseHashMatched = checkResponseCleartextHash(receipt, input.responseCleartextBody)
 
   const received = event(receipt, 'request.received')
   const forwarded = event(receipt, 'request.forwarded')
@@ -107,14 +107,14 @@ export async function verifyPhalaCompletionReceipt(input: {
   assert(isRecord(rawSession), 'Invalid Phala upstream session')
   const session = rawSession as SessionRecord & { api_version?: unknown; session_id?: unknown }
   assert(session.api_version === 'aci/1' && session.session_id === upstream.session_id, 'Phala session identity mismatch')
-  assert(await computeSessionId(session) === upstream.session_id, 'Phala session content hash mismatch')
+  assert(computeSessionId(session) === upstream.session_id, 'Phala session content hash mismatch')
   assert(session.endpoint === upstream.url_origin && session.verifier_id === 'private-ai-verifier/phala-direct/v1', 'Phala session verifier or endpoint mismatch')
   assert(canonicalize(session.channel_binding as JcsValue) === canonicalize(upstream.channel_bindings as JcsValue), 'Phala session channel binding mismatch')
   assert(canonicalize(session.claims as JcsValue) === canonicalize(upstream.claims as JcsValue), 'Phala session claims mismatch')
   assert(session.evidence && typeof session.evidence === 'object', 'Phala session evidence commitment is missing')
   assert(typeof session.evidence.digest === 'string' && /^sha256:[0-9a-f]{64}$/.test(session.evidence.digest), 'Phala session evidence digest is missing or invalid')
   assert(typeof session.evidence.data === 'string', 'Phala session evidence bytes are missing')
-  assert(await sha256Prefixed(bytesFromDataUri(session.evidence.data)) === session.evidence.digest, 'Phala session evidence digest mismatch')
+  assert(sha256Prefixed(bytesFromDataUri(session.evidence.data)) === session.evidence.digest, 'Phala session evidence digest mismatch')
 
   const responseReturned = event(receipt, 'response.returned')
   return {
@@ -124,7 +124,7 @@ export async function verifyPhalaCompletionReceipt(input: {
       provider: 'phala-cloud',
       model: input.policy.model,
       requestHash: String(received.body_hash),
-      responseHash: String(responseReturned.wire_hash ?? await hashBody(input.responseWireBody)),
+      responseHash: String(responseReturned.wire_hash ?? hashBody(input.responseWireBody)),
       signer: `${receipt.workload_id}#${receipt.signature.key_id}`,
       signature: receipt.signature.value,
       signedText: new TextDecoder().decode(receiptSigningBytes(receipt)),

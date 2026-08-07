@@ -71,7 +71,7 @@ describe('Phala ACI parser and signature hardening', () => {
     expect(() => canonicalize(Number.MIN_SAFE_INTEGER - 1)).toThrow('safe integers')
   })
 
-  it('applies the same low-S policy to recoverable secp256k1 signatures', async () => {
+  it('applies the same low-S policy to recoverable secp256k1 signatures', () => {
     const secretKey = secp256k1.utils.randomSecretKey()
     const publicKey = secp256k1.getPublicKey(secretKey, false)
     const message = new TextEncoder().encode('ACI recovery signature')
@@ -79,16 +79,16 @@ describe('Phala ACI parser and signature hardening', () => {
     const recovery = recovered[0]!
     const compact = recovered.slice(1)
     const wire = Uint8Array.of(...compact, recovery)
-    expect(await verifySignature('ecdsa-secp256k1', publicKey, wire, message, 'test')).toBe(true)
+    expect(verifySignature('ecdsa-secp256k1', publicKey, wire, message, 'test')).toBe(true)
 
     const s = BigInt(`0x${Buffer.from(compact.slice(32)).toString('hex')}`)
     const highCompact = Uint8Array.of(...compact.slice(0, 32), ...bytes32(secp256k1.Point.Fn.ORDER - s))
     const highWire = Uint8Array.of(...highCompact, recovery ^ 1)
-    expect(await verifySignature('ecdsa-secp256k1', publicKey, highWire, message, 'test')).toBe(false)
+    expect(verifySignature('ecdsa-secp256k1', publicKey, highWire, message, 'test')).toBe(false)
   })
 
-  it('returns failed signature checks instead of throwing on malformed hex', async () => {
-    const receiptResult = await verifyReceipt(receipt('zz'), keyset('1z'))
+  it('returns failed signature checks instead of throwing on malformed hex', () => {
+    const receiptResult = verifyReceipt(receipt('zz'), keyset('1z'))
     expect(receiptResult.ok).toBe(false)
     expect(receiptResult.checks.find((check) => check.name === 'signature')).toMatchObject({ ok: false })
 
@@ -101,7 +101,7 @@ describe('Phala ACI parser and signature hardening', () => {
         keyset_endorsement: { algo: 'ed25519', value: '1z' },
       },
     } as unknown as AttestationReport
-    const reportResult = await verifyReportBinding(report, 'nonce')
+    const reportResult = verifyReportBinding(report, 'nonce')
     expect(reportResult.ok).toBe(false)
     expect(reportResult.checks.find((check) => check.name === 'keyset_endorsement')).toMatchObject({ ok: false })
   })
