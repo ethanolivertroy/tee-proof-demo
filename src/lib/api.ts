@@ -5,6 +5,7 @@ import { NEAR_ATTESTATION_ALLOWED_FIELDS, NEAR_ATTESTATION_REQUIRED_FIELDS } fro
 import { decryptFromModel, encryptForModel, generateClientKeys, sha256Hex, verifyEd25519Signature } from './crypto'
 import { bytesToHex, textEncoder } from './encoding'
 import { assert, assertPlainObject } from './guards'
+import { accessHeaders, fetchJson } from './http'
 import { openE2eeChannel, verifyReportBinding, type AttestationReport as AciAttestationReport } from './phala-aci'
 import { verifyPhalaCompletionReceipt } from './phala-completion'
 import { canonicalPolicyText, getModelPolicy, isNearPolicy, type ModelId, type ModelPolicy, type NearModelPolicy, type PhalaModelPolicy } from './policy'
@@ -12,17 +13,12 @@ import type { AttestationReport, CompletionResponse, NearTrustEvidence, PhalaGat
 
 export type TrustStage = 'fetching' | 'cpu' | 'gpu' | 'ready'
 export const EVIDENCE_TTL_MS = 5 * 60 * 1000
-const MAX_JSON_RESPONSE_CHARS = 2_000_000
 const RECEIPT_TIMEOUT_MS = 12_000
 const sleep = (milliseconds: number) => new Promise((resolve) => window.setTimeout(resolve, milliseconds))
 
 function exactKeys(value: Record<string, unknown>, allowed: readonly string[], label: string): void {
   const permitted = new Set(allowed)
   for (const key of Object.keys(value)) assert(permitted.has(key), `Unexpected ${label} field: ${key}`)
-}
-
-function accessHeaders(accessToken: string): Record<string, string> {
-  return { 'x-demo-access-token': accessToken }
 }
 
 export async function verifyDemoAccess(accessToken: string): Promise<void> {
@@ -56,14 +52,6 @@ export function parseCompletionResponse(value: unknown, policy: ModelPolicy): Co
   assert(value.model === policy.model, 'Completion model does not match the selected policy')
   assert(Array.isArray(value.choices) && value.choices.length > 0, 'Completion choices are missing')
   return value as unknown as CompletionResponse
-}
-
-async function fetchJson(path: string, init?: RequestInit): Promise<unknown> {
-  const response = await fetch(path, init)
-  const text = await response.text()
-  if (text.length > MAX_JSON_RESPONSE_CHARS) throw new Error('Provider response exceeded the client limit')
-  if (!response.ok) throw new Error(`Request failed (${response.status}): ${text.slice(0, 180)}`)
-  return JSON.parse(text)
 }
 
 export function parseNearAttestationResponse(value: unknown): AttestationReport {

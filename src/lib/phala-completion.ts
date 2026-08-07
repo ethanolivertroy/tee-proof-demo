@@ -15,6 +15,7 @@ import {
   type WorkloadKeyset,
 } from './phala-aci'
 import { assert, isRecord } from './guards'
+import { accessHeaders, fetchJson } from './http'
 import type { PhalaModelPolicy } from './policy'
 import type { CompletionReceipt } from './types'
 
@@ -46,16 +47,6 @@ function bytesFromDataUri(value: string): Uint8Array {
   return Uint8Array.from(binary, (char) => char.charCodeAt(0))
 }
 
-async function fetchJson(path: string, modelId: string, accessToken: string): Promise<unknown> {
-  const response = await fetch(`${path}?model=${encodeURIComponent(modelId)}`, {
-    cache: 'no-store',
-    headers: { 'x-demo-access-token': accessToken },
-  })
-  const text = await response.text()
-  if (!response.ok) throw new Error(`Phala evidence fetch failed (${response.status}): ${text.slice(0, 180)}`)
-  return JSON.parse(text)
-}
-
 export interface PhalaReceiptVerification {
   receipt: CompletionReceipt
   cleartextResponseHashMatched: boolean
@@ -72,7 +63,11 @@ export async function verifyPhalaCompletionReceipt(input: {
   accessToken: string
 }): Promise<PhalaReceiptVerification> {
   assert(/^rcpt-[0-9a-f]{24}$/.test(input.receiptId), 'Invalid Phala receipt id')
-  const rawReceipt = await fetchJson(`/api/phala/receipts/${input.receiptId}`, input.policy.id, input.accessToken)
+  const fetchEvidence = (path: string) => fetchJson(`${path}?model=${encodeURIComponent(input.policy.id)}`, {
+    cache: 'no-store',
+    headers: accessHeaders(input.accessToken),
+  })
+  const rawReceipt = await fetchEvidence(`/api/phala/receipts/${input.receiptId}`)
   assert(isRecord(rawReceipt), 'Invalid Phala receipt')
   const receipt = rawReceipt as Receipt
   assert(receipt.api_version === 'aci/1' && receipt.receipt_id === input.receiptId, 'Phala receipt identity mismatch')
@@ -108,7 +103,7 @@ export async function verifyPhalaCompletionReceipt(input: {
   claimAsserted(upstream.claims, 'gpu_attested', ['verifier_derived'])
   claimAsserted(upstream.claims, 'tcb_up_to_date', ['hardware_proven', 'verifier_derived'])
 
-  const rawSession = await fetchJson(`/api/phala/sessions/${upstream.session_id}`, input.policy.id, input.accessToken)
+  const rawSession = await fetchEvidence(`/api/phala/sessions/${upstream.session_id}`)
   assert(isRecord(rawSession), 'Invalid Phala upstream session')
   const session = rawSession as SessionRecord & { api_version?: unknown; session_id?: unknown }
   assert(session.api_version === 'aci/1' && session.session_id === upstream.session_id, 'Phala session identity mismatch')
