@@ -1,7 +1,7 @@
 import type { AttestationReport as AciAttestationReport } from './phala-aci/types'
 import type { ProviderId } from './policy'
 
-export interface CompletionReceipt {
+interface BaseCompletionReceipt {
   provider: ProviderId
   model: string
   requestHash: string
@@ -10,12 +10,28 @@ export interface CompletionReceipt {
   signature: string
   signedText: string
   verifiedAt: string
-  receiptId?: string
-  workloadId?: string
-  workloadKeysetDigest?: string
-  upstreamProviderType?: string
-  sessionId?: string
 }
+
+export interface NearCompletionReceipt extends BaseCompletionReceipt {
+  provider: 'near-ai'
+}
+
+export interface PhalaCompletionReceipt extends BaseCompletionReceipt {
+  provider: 'phala-cloud'
+  receiptId: string
+  workloadId: string
+  workloadKeysetDigest: string
+  upstreamProviderType: string
+  sessionId: string
+  /**
+   * Whether the signed cleartext hash also matched our re-serialization of the
+   * decrypted body. Reserialization drift is expected, so this is a diagnostic
+   * rather than a trust requirement; the wire hash check is the binding one.
+   */
+  cleartextResponseHashMatched: boolean
+}
+
+export type CompletionReceipt = NearCompletionReceipt | PhalaCompletionReceipt
 
 export interface AttestationReport {
   model_name: string

@@ -49,7 +49,8 @@ export interface PhalaModelPolicy extends BaseModelPolicy {
   provider: 'phala-cloud'
   protocol: 'phala-aci-v2'
   workloadId: string
-  expectedSubject: null
+  /** ACI workload identity subject the gateway must present; null pins "no subject". */
+  expectedSubject: string | null
   e2eeAlgorithm: 'x25519-aes-256-gcm-hkdf-sha256'
   e2eeKeyId: string
   receiptAlgorithm: 'ed25519'

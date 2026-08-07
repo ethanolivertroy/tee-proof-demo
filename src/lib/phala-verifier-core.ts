@@ -3,7 +3,7 @@ import { sha256Hex } from './crypto'
 import { bytesToHex, concatBytes, equalBytes, hexToBytes } from './encoding'
 import { assert } from './guards'
 import { verifyDstackEvidence } from './phala-dstack'
-import { verifyReportBinding, type AttestationReport as AciAttestationReport } from './phala-aci'
+import { verifyReportBinding, type AttestationReport as AciAttestationReport, type JcsValue } from './phala-aci'
 import type { PhalaModelPolicy } from './policy'
 import type { PhalaGatewayEvidence } from './types'
 
@@ -26,6 +26,7 @@ interface E2eeKey {
 }
 
 interface PhalaWireReport extends AciAttestationReport {
+  service_capabilities?: { supported_e2ee_versions?: JcsValue; [key: string]: JcsValue | undefined }
   attestation: AciAttestationReport['attestation'] & {
     vendor?: unknown
     tee_type?: unknown
@@ -77,8 +78,8 @@ export async function verifyPhalaGateway(
   assert(wire.api_version === 'aci/1', 'Unsupported Phala ACI report version')
   assert(wire.attestation.tee_type === 'tdx', 'Phala gateway is not reporting Intel TDX')
   assert(wire.workload_id === policy.workloadId, `Phala workload is not approved: ${wire.workload_id}`)
-  assert(wire.attestation.workload_keyset.workload_identity.subject == null && policy.expectedSubject === null, 'Unexpected Phala workload subject')
-  const capabilities = (report as unknown as { service_capabilities?: { supported_e2ee_versions?: unknown } }).service_capabilities
+  assert((wire.attestation.workload_keyset.workload_identity.subject ?? null) === policy.expectedSubject, 'Unexpected Phala workload subject')
+  const capabilities = wire.service_capabilities
   assert(Array.isArray(capabilities?.supported_e2ee_versions) && capabilities.supported_e2ee_versions.includes('2'), 'Phala ACI E2EE v2 is unavailable')
 
   const binding = verifyReportBinding(report, requestedNonce, { trustPlatformClock: true })

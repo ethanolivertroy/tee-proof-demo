@@ -17,7 +17,7 @@ import {
 import { assert, isRecord } from './guards'
 import { accessHeaders, fetchJson } from './http'
 import type { PhalaModelPolicy } from './policy'
-import type { CompletionReceipt } from './types'
+import type { PhalaCompletionReceipt } from './types'
 
 function event(receipt: Receipt, type: string): ReceiptEvent {
   const found = receipt.event_log.find((entry) => entry.type === type)
@@ -47,12 +47,6 @@ function bytesFromDataUri(value: string): Uint8Array {
   return Uint8Array.from(binary, (char) => char.charCodeAt(0))
 }
 
-export interface PhalaReceiptVerification {
-  receipt: CompletionReceipt
-  cleartextResponseHashMatched: boolean
-  upstreamClaims: unknown
-}
-
 export async function verifyPhalaCompletionReceipt(input: {
   receiptId: string
   policy: PhalaModelPolicy
@@ -61,11 +55,13 @@ export async function verifyPhalaCompletionReceipt(input: {
   responseWireBody: string
   responseCleartextBody: string
   accessToken: string
-}): Promise<PhalaReceiptVerification> {
+  signal?: AbortSignal
+}): Promise<PhalaCompletionReceipt> {
   assert(/^rcpt-[0-9a-f]{24}$/.test(input.receiptId), 'Invalid Phala receipt id')
   const fetchEvidence = (path: string) => fetchJson(`${path}?model=${encodeURIComponent(input.policy.id)}`, {
     cache: 'no-store',
     headers: accessHeaders(input.accessToken),
+    signal: input.signal,
   })
   const rawReceipt = await fetchEvidence(`/api/phala/receipts/${input.receiptId}`)
   assert(isRecord(rawReceipt), 'Invalid Phala receipt')
@@ -118,22 +114,19 @@ export async function verifyPhalaCompletionReceipt(input: {
 
   const responseReturned = event(receipt, 'response.returned')
   return {
+    provider: 'phala-cloud',
+    model: input.policy.model,
+    requestHash: String(received.body_hash),
+    responseHash: String(responseReturned.wire_hash ?? hashBody(input.responseWireBody)),
+    signer: `${receipt.workload_id}#${receipt.signature.key_id}`,
+    signature: receipt.signature.value,
+    signedText: new TextDecoder().decode(receiptSigningBytes(receipt)),
+    verifiedAt: new Date().toISOString(),
+    receiptId: receipt.receipt_id,
+    workloadId: receipt.workload_id,
+    workloadKeysetDigest: receipt.workload_keyset_digest,
+    upstreamProviderType: String(upstream.provider_type),
+    sessionId: String(upstream.session_id),
     cleartextResponseHashMatched,
-    upstreamClaims: upstream.claims,
-    receipt: {
-      provider: 'phala-cloud',
-      model: input.policy.model,
-      requestHash: String(received.body_hash),
-      responseHash: String(responseReturned.wire_hash ?? hashBody(input.responseWireBody)),
-      signer: `${receipt.workload_id}#${receipt.signature.key_id}`,
-      signature: receipt.signature.value,
-      signedText: new TextDecoder().decode(receiptSigningBytes(receipt)),
-      verifiedAt: new Date().toISOString(),
-      receiptId: receipt.receipt_id,
-      workloadId: receipt.workload_id,
-      workloadKeysetDigest: receipt.workload_keyset_digest,
-      upstreamProviderType: String(upstream.provider_type),
-      sessionId: String(upstream.session_id),
-    },
   }
 }

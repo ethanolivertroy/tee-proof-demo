@@ -9,7 +9,7 @@ import { accessHeaders, fetchJson } from './http'
 import { openE2eeChannel, verifyReportBinding, type AttestationReport as AciAttestationReport } from './phala-aci'
 import { verifyPhalaCompletionReceipt } from './phala-completion'
 import { canonicalPolicyText, getModelPolicy, type ModelId, type ModelPolicy, type NearModelPolicy, type PhalaModelPolicy } from './policy'
-import type { AttestationReport, CompletionResponse, NearTrustEvidence, PhalaGatewayEvidence, PhalaTrustEvidence, SignatureReport, TrustEvidence, VerifiedCompletion } from './types'
+import type { AttestationReport, CompletionResponse, NearCompletionReceipt, NearTrustEvidence, PhalaGatewayEvidence, PhalaTrustEvidence, SignatureReport, TrustEvidence, VerifiedCompletion } from './types'
 import { runVerifierInWorker } from './verifier-worker'
 
 /** Progress through `policy.steps`: the index of the step now running, then 'ready'. */
@@ -187,7 +187,7 @@ async function fetchNearSignature(chatId: string, modelId: string, accessToken: 
   throw new Error(`Completion signature was not found after retries (${lastStatus})`)
 }
 
-export function verifyCompletionSignature(signature: SignatureReport, evidence: TrustEvidence, policy: NearModelPolicy, requestText: string, responseText: string) {
+export function verifyCompletionSignature(signature: SignatureReport, evidence: TrustEvidence, policy: NearModelPolicy, requestText: string, responseText: string): NearCompletionReceipt {
   assert(evidence.protocol === 'near-e2ee-v2', 'NEAR receipt verification requires NEAR trust evidence')
   assert(signature.signing_algo.toLowerCase() === 'ed25519', 'Unexpected completion signature algorithm')
   assert(signature.signing_address.toLowerCase() === evidence.signingPublicKey, 'Completion signer is not the attested model key')
@@ -197,7 +197,7 @@ export function verifyCompletionSignature(signature: SignatureReport, evidence: 
   assert(signature.text === expectedText, 'Signed completion payload does not match the exact request and response')
   assert(verifyEd25519Signature(signature.signature, signature.text, evidence.signingPublicKey), 'Completion signature verification failed')
   return {
-    provider: 'near-ai' as const,
+    provider: 'near-ai',
     model: policy.model,
     requestHash,
     responseHash,
@@ -266,19 +266,19 @@ async function sendPhalaPrompt(prompt: string, evidence: PhalaTrustEvidence, pol
   assert(receiptId, 'Phala completion omitted its receipt id')
   const opened = await channel.open(JSON.parse(responseWireBody) as Record<string, unknown>)
   const body = parseCompletionResponse(opened, policy)
-  const receipt = await Promise.race([
-    verifyPhalaCompletionReceipt({
-      receiptId,
-      policy,
-      keyset: evidence.raw.attestation.workload_keyset,
-      plaintextRequestBody: JSON.stringify(plaintext),
-      responseWireBody,
-      responseCleartextBody: JSON.stringify(opened),
-      accessToken,
-    }),
-    new Promise<never>((_, reject) => window.setTimeout(() => reject(new Error('Phala receipt verification timed out')), RECEIPT_TIMEOUT_MS)),
-  ])
-  return { content: completionText(body), receipt: receipt.receipt }
+  const receipt = await verifyPhalaCompletionReceipt({
+    receiptId,
+    policy,
+    keyset: evidence.raw.attestation.workload_keyset,
+    plaintextRequestBody: JSON.stringify(plaintext),
+    responseWireBody,
+    responseCleartextBody: JSON.stringify(opened),
+    accessToken,
+    signal: AbortSignal.timeout(RECEIPT_TIMEOUT_MS),
+  }).catch((reason: unknown) => {
+    throw reason instanceof Error && reason.name === 'TimeoutError' ? new Error('Phala receipt verification timed out') : reason
+  })
+  return { content: completionText(body), receipt }
 }
 
 export async function sendEncryptedPrompt(prompt: string, evidence: TrustEvidence, accessToken: string): Promise<VerifiedCompletion> {
