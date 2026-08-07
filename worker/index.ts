@@ -46,21 +46,20 @@ async function sha256(value: string): Promise<Uint8Array> {
   return new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value)))
 }
 
-async function accessAllowed(request: Request, env: Env): Promise<boolean> {
-  const expected = env.DEMO_ACCESS_TOKEN
-  const supplied = request.headers.get('x-demo-access-token') ?? ''
-  if (!expected || expected.length < 20 || supplied.length < 20 || supplied.length > 256) return false
-  const [expectedHash, suppliedHash] = await Promise.all([sha256(expected), sha256(supplied)])
-  let difference = 0
-  for (let index = 0; index < expectedHash.length; index += 1) difference |= expectedHash[index]! ^ suppliedHash[index]!
-  return difference === 0
-}
-
+/** Owner-token gate. Hashing both tokens makes the byte comparison constant-time. */
 async function requireAccess(request: Request, env: Env): Promise<Response | null> {
-  if (!env.DEMO_ACCESS_TOKEN || env.DEMO_ACCESS_TOKEN.length < 20) {
+  const expected = env.DEMO_ACCESS_TOKEN
+  if (!expected || expected.length < 20) {
     return jsonResponse({ error: 'Demo access gate is not configured', code: 'missing_access_gate' }, 503)
   }
-  return await accessAllowed(request, env) ? null : jsonResponse({ error: 'Access token rejected', code: 'access_denied' }, 401)
+  const supplied = request.headers.get('x-demo-access-token') ?? ''
+  if (supplied.length >= 20 && supplied.length <= 256) {
+    const [expectedHash, suppliedHash] = await Promise.all([sha256(expected), sha256(supplied)])
+    let difference = 0
+    for (let index = 0; index < expectedHash.length; index += 1) difference |= expectedHash[index]! ^ suppliedHash[index]!
+    if (difference === 0) return null
+  }
+  return jsonResponse({ error: 'Access token rejected', code: 'access_denied' }, 401)
 }
 
 async function boundedBody(request: Request, limit: number): Promise<ArrayBuffer> {
@@ -302,42 +301,58 @@ async function proxyChat(request: Request, env: Env, upstreamFetch: FetchLike): 
   return new Response(upstream.body, { status: upstream.status, headers: responseHeaders })
 }
 
-async function proxySignature(request: Request, env: Env, upstreamFetch: FetchLike, chatId: string): Promise<Response> {
-  if (request.method !== 'GET') return jsonResponse({ error: 'Method not allowed' }, 405)
-  const accessFailure = await requireAccess(request, env)
-  if (accessFailure) return accessFailure
-  const policy = policyFromRequest(request)
-  if (policy instanceof Response) return policy
-  if (!isNearPolicy(policy)) return jsonResponse({ error: 'NEAR signature route is unavailable for this provider' }, 400)
-  const apiKey = requireApiKey(env, policy)
-  if (apiKey instanceof Response) return apiKey
-  if (!CHAT_ID.test(chatId)) return jsonResponse({ error: 'Invalid chat id' }, 400)
-  const upstream = await upstreamFetch(upstreamUrl(policy, `/v1/signature/${chatId}`, '?signing_algo=ed25519'), {
-    headers: { accept: 'application/json', authorization: `Bearer ${apiKey}` },
-    redirect: 'manual',
-  })
-  if (upstream.status === 404) return jsonResponse({ error: 'Signature not found' }, 404)
-  if (!upstream.ok) return jsonResponse({ error: 'Signature provider unavailable', code: 'upstream_signature_error' }, 502)
-  return new Response(upstream.body, { status: upstream.status, headers: { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' } })
+/**
+ * Completion evidence lookups (NEAR signatures, Phala receipts and sessions)
+ * share one authenticated GET relay; only these route facts differ.
+ */
+interface EvidenceRoute {
+  protocol: ModelPolicy['protocol']
+  idPattern: RegExp
+  upstreamPath: (id: string) => string
+  label: string
+  errorCode: string
 }
 
-async function proxyPhalaEvidence(request: Request, env: Env, upstreamFetch: FetchLike, kind: 'receipts' | 'sessions', id: string): Promise<Response> {
+const EVIDENCE_ROUTES = {
+  '/api/signature/': {
+    protocol: 'near-e2ee-v2',
+    idPattern: CHAT_ID,
+    upstreamPath: (id) => `/v1/signature/${id}?signing_algo=ed25519`,
+    label: 'NEAR signature',
+    errorCode: 'upstream_signature_error',
+  },
+  '/api/phala/receipts/': {
+    protocol: 'phala-aci-v2',
+    idPattern: RECEIPT_ID,
+    upstreamPath: (id) => `/v1/aci/receipts/${id}`,
+    label: 'Phala receipts',
+    errorCode: 'upstream_evidence_error',
+  },
+  '/api/phala/sessions/': {
+    protocol: 'phala-aci-v2',
+    idPattern: SESSION_ID,
+    upstreamPath: (id) => `/v1/aci/sessions/${id}`,
+    label: 'Phala sessions',
+    errorCode: 'upstream_evidence_error',
+  },
+} satisfies Record<string, EvidenceRoute>
+
+async function proxyEvidence(request: Request, env: Env, upstreamFetch: FetchLike, route: EvidenceRoute, id: string): Promise<Response> {
   if (request.method !== 'GET') return jsonResponse({ error: 'Method not allowed' }, 405)
   const accessFailure = await requireAccess(request, env)
   if (accessFailure) return accessFailure
   const policy = policyFromRequest(request)
   if (policy instanceof Response) return policy
-  if (isNearPolicy(policy)) return jsonResponse({ error: 'Phala evidence route is unavailable for this provider' }, 400)
-  const validId = kind === 'receipts' ? RECEIPT_ID.test(id) : SESSION_ID.test(id)
-  if (!validId) return jsonResponse({ error: `Invalid Phala ${kind} id` }, 400)
+  if (policy.protocol !== route.protocol) return jsonResponse({ error: `${route.label} route is unavailable for this provider` }, 400)
+  if (!route.idPattern.test(id)) return jsonResponse({ error: `Invalid ${route.label} id` }, 400)
   const apiKey = requireApiKey(env, policy)
   if (apiKey instanceof Response) return apiKey
-  const upstream = await upstreamFetch(upstreamUrl(policy, `/v1/aci/${kind}/${id}`), {
+  const upstream = await upstreamFetch(upstreamUrl(policy, route.upstreamPath(id)), {
     headers: { accept: 'application/json', authorization: `Bearer ${apiKey}` },
     redirect: 'manual',
   })
-  if (upstream.status === 404) return jsonResponse({ error: `Phala ${kind} record not found` }, 404)
-  if (!upstream.ok) return jsonResponse({ error: `Phala ${kind} provider unavailable`, code: 'upstream_evidence_error' }, 502)
+  if (upstream.status === 404) return jsonResponse({ error: `${route.label} record not found` }, 404)
+  if (!upstream.ok) return jsonResponse({ error: `${route.label} provider unavailable`, code: route.errorCode }, 502)
   return new Response(upstream.body, { status: upstream.status, headers: { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' } })
 }
 
@@ -379,9 +394,9 @@ export async function handleApiRequest(request: Request, env: Env, upstreamFetch
   if (url.pathname === '/api/attestation') return proxyAttestation(request, upstreamFetch)
   if (url.pathname === '/api/chat') return proxyChat(request, env, upstreamFetch)
   if (url.pathname === '/api/nras') return proxyNras(request, upstreamFetch)
-  if (url.pathname.startsWith('/api/signature/')) return proxySignature(request, env, upstreamFetch, url.pathname.slice('/api/signature/'.length))
-  if (url.pathname.startsWith('/api/phala/receipts/')) return proxyPhalaEvidence(request, env, upstreamFetch, 'receipts', url.pathname.slice('/api/phala/receipts/'.length))
-  if (url.pathname.startsWith('/api/phala/sessions/')) return proxyPhalaEvidence(request, env, upstreamFetch, 'sessions', url.pathname.slice('/api/phala/sessions/'.length))
+  for (const [prefix, route] of Object.entries(EVIDENCE_ROUTES)) {
+    if (url.pathname.startsWith(prefix)) return proxyEvidence(request, env, upstreamFetch, route, url.pathname.slice(prefix.length))
+  }
   return jsonResponse({ error: 'Not found' }, 404)
 }
 

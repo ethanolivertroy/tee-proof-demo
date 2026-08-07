@@ -234,9 +234,7 @@ async function sendNearPrompt(prompt: string, evidence: NearTrustEvidence, polic
   const body = parseCompletionResponse(JSON.parse(responseText), policy)
   const signature = await fetchNearSignature(body.id, policy.id, accessToken)
   const receipt = verifyCompletionSignature(signature, evidence, policy, requestText, responseText)
-  const encryptedAnswer = body.choices[0]?.message?.content ?? body.choices[0]?.message?.reasoning_content
-  assert(encryptedAnswer, 'Completion response contained no encrypted text')
-  return { content: decryptFromModel(encryptedAnswer, client.x25519SecretKey), receipt }
+  return { content: decryptFromModel(completionText(body), client.x25519SecretKey), receipt }
 }
 
 async function sendPhalaPrompt(prompt: string, evidence: PhalaTrustEvidence, policy: PhalaModelPolicy, accessToken: string): Promise<VerifiedCompletion> {
