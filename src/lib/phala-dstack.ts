@@ -2,6 +2,7 @@ import { secp256k1 } from '@noble/curves/secp256k1.js'
 import { sha256, sha384 } from '@noble/hashes/sha2.js'
 import { keccak_256 } from '@noble/hashes/sha3.js'
 import { bytesToHex, concatBytes, equalBytes, hexToBytes, textEncoder } from './encoding'
+import { assert, isRecord } from './guards'
 import type { PhalaModelPolicy } from './policy'
 
 const RUNTIME_EVENT_TYPE = 0x08000001
@@ -30,16 +31,11 @@ interface DstackEvidence {
   }
 }
 
-function assert(condition: unknown, message: string): asserts condition {
-  if (!condition) throw new Error(message)
-}
-
 function asEvent(value: unknown): DstackEvent {
-  assert(value && typeof value === 'object' && !Array.isArray(value), 'Invalid dstack event')
-  const event = value as Record<string, unknown>
-  assert(Number.isInteger(event.imr) && Number.isInteger(event.event_type), 'Invalid dstack event registers')
-  assert(typeof event.digest === 'string' && typeof event.event === 'string' && typeof event.event_payload === 'string', 'Invalid dstack event fields')
-  return event as unknown as DstackEvent
+  assert(isRecord(value), 'Invalid dstack event')
+  assert(Number.isInteger(value.imr) && Number.isInteger(value.event_type), 'Invalid dstack event registers')
+  assert(typeof value.digest === 'string' && typeof value.event === 'string' && typeof value.event_payload === 'string', 'Invalid dstack event fields')
+  return value as unknown as DstackEvent
 }
 
 function runtimeDigest(event: DstackEvent): Uint8Array {
@@ -102,8 +98,8 @@ export function verifyMeasuredSourceProvenance(appCompose: string, policy: Phala
   } catch {
     throw new Error('Measured app Compose descriptor is not valid JSON')
   }
-  assert(descriptor && typeof descriptor === 'object' && !Array.isArray(descriptor), 'Measured app Compose descriptor is invalid')
-  const composeFile = (descriptor as Record<string, unknown>).docker_compose_file
+  assert(isRecord(descriptor), 'Measured app Compose descriptor is invalid')
+  const composeFile = descriptor.docker_compose_file
   assert(typeof composeFile === 'string', 'Measured Docker Compose file is missing')
 
   const environmentValue = (name: string): string => {
@@ -131,7 +127,7 @@ export function verifyDstackEvidence(
   quoteRtmr3: Uint8Array,
   policy: PhalaModelPolicy,
 ): VerifiedDstackEvidence {
-  assert(evidenceValue && typeof evidenceValue === 'object' && !Array.isArray(evidenceValue), 'Missing dstack evidence')
+  assert(isRecord(evidenceValue), 'Missing dstack evidence')
   const evidence = evidenceValue as Partial<DstackEvidence>
   assert(typeof evidence.event_log === 'string', 'Missing dstack event log')
   assert(typeof evidence.app_compose === 'string', 'Missing measured app Compose')

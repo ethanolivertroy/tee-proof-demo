@@ -1,14 +1,11 @@
 import { getCollateralAndVerify } from '@phala/dcap-qvl'
 import { sha256 } from '@noble/hashes/sha2.js'
 import { bytesToHex, concatBytes, equalBytes, hexToBytes, textEncoder } from './encoding'
+import { assert } from './guards'
 import type { NearModelPolicy, WorkloadMeasurements } from './policy'
 import type { AttestationReport, CpuEvidence } from './types'
 
 const HEX_32 = /^[0-9a-f]{64}$/i
-
-function assert(condition: unknown, message: string): asserts condition {
-  if (!condition) throw new Error(message)
-}
 
 function normalizedHex(value: string): string {
   return value.replace(/^0x/i, '').toLowerCase()

@@ -1,3 +1,4 @@
+import { isRecord } from '../src/lib/guards'
 import { getModelPolicy, isModelId, isNearPolicy, type ModelPolicy, type PhalaModelPolicy } from '../src/lib/policy'
 
 const MAX_CHAT_BYTES = 64 * 1024
@@ -111,30 +112,25 @@ function validCiphertext(value: unknown, minimumBytes: number): value is string 
 }
 
 function validNearEncryptedPrompt(value: unknown, policy: ModelPolicy): boolean {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return false
-  const body = value as Record<string, unknown>
-  if (!hasOnlyKeys(body, EXACT_NEAR_CHAT_KEYS)) return false
-  if (body.model !== policy.model || body.stream !== false || body.max_tokens !== 256) return false
-  if (!Array.isArray(body.messages) || body.messages.length !== 1) return false
-  const message = body.messages[0]
-  if (!message || typeof message !== 'object' || Array.isArray(message)) return false
-  const item = message as Record<string, unknown>
-  return hasOnlyKeys(item, EXACT_MESSAGE_KEYS) && item.role === 'user' && validCiphertext(item.content, 73)
+  if (!isRecord(value)) return false
+  if (!hasOnlyKeys(value, EXACT_NEAR_CHAT_KEYS)) return false
+  if (value.model !== policy.model || value.stream !== false || value.max_tokens !== 256) return false
+  if (!Array.isArray(value.messages) || value.messages.length !== 1) return false
+  const message: unknown = value.messages[0]
+  if (!isRecord(message)) return false
+  return hasOnlyKeys(message, EXACT_MESSAGE_KEYS) && message.role === 'user' && validCiphertext(message.content, 73)
 }
 
 function validPhalaEncryptedPrompt(value: unknown, policy: PhalaModelPolicy): boolean {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return false
-  const body = value as Record<string, unknown>
-  if (!hasOnlyKeys(body, EXACT_PHALA_CHAT_KEYS)) return false
-  if (body.model !== policy.model || body.stream !== false || body.max_tokens !== 512) return false
-  if (!body.provider || typeof body.provider !== 'object' || Array.isArray(body.provider)) return false
-  const provider = body.provider as Record<string, unknown>
-  if (!hasOnlyKeys(provider, EXACT_PROVIDER_KEYS) || provider.aci_verified !== true) return false
-  if (!Array.isArray(body.messages) || body.messages.length !== 1) return false
-  const message = body.messages[0]
-  if (!message || typeof message !== 'object' || Array.isArray(message)) return false
-  const item = message as Record<string, unknown>
-  return hasOnlyKeys(item, EXACT_MESSAGE_KEYS) && item.role === 'user' && validCiphertext(item.content, 60)
+  if (!isRecord(value)) return false
+  if (!hasOnlyKeys(value, EXACT_PHALA_CHAT_KEYS)) return false
+  if (value.model !== policy.model || value.stream !== false || value.max_tokens !== 512) return false
+  if (!isRecord(value.provider)) return false
+  if (!hasOnlyKeys(value.provider, EXACT_PROVIDER_KEYS) || value.provider.aci_verified !== true) return false
+  if (!Array.isArray(value.messages) || value.messages.length !== 1) return false
+  const message: unknown = value.messages[0]
+  if (!isRecord(message)) return false
+  return hasOnlyKeys(message, EXACT_MESSAGE_KEYS) && message.role === 'user' && validCiphertext(message.content, 60)
 }
 
 async function proxyAttestation(request: Request, upstreamFetch: FetchLike): Promise<Response> {

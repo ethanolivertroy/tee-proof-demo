@@ -4,6 +4,7 @@ import { verifyAttestation } from './attestation'
 import { NEAR_ATTESTATION_ALLOWED_FIELDS, NEAR_ATTESTATION_REQUIRED_FIELDS } from './attestation-schema'
 import { decryptFromModel, encryptForModel, generateClientKeys, sha256Hex, verifyEd25519Signature } from './crypto'
 import { bytesToHex, textEncoder } from './encoding'
+import { assert, assertPlainObject } from './guards'
 import { openE2eeChannel, verifyReportBinding, type AttestationReport as AciAttestationReport } from './phala-aci'
 import { verifyPhalaCompletionReceipt } from './phala-completion'
 import { canonicalPolicyText, getModelPolicy, isNearPolicy, type ModelId, type ModelPolicy, type NearModelPolicy, type PhalaModelPolicy } from './policy'
@@ -14,17 +15,6 @@ export const EVIDENCE_TTL_MS = 5 * 60 * 1000
 const MAX_JSON_RESPONSE_CHARS = 2_000_000
 const RECEIPT_TIMEOUT_MS = 12_000
 const sleep = (milliseconds: number) => new Promise((resolve) => window.setTimeout(resolve, milliseconds))
-
-function assert(condition: unknown, message: string): asserts condition {
-  if (!condition) throw new Error(message)
-}
-
-function assertPlainObject(value: unknown, message: string): asserts value is Record<string, unknown> {
-  assert(value != null && typeof value === 'object' && !Array.isArray(value), message)
-  for (const key of ['__proto__', 'constructor', 'prototype']) {
-    assert(!Object.prototype.hasOwnProperty.call(value, key), `Unsafe response key: ${key}`)
-  }
-}
 
 function exactKeys(value: Record<string, unknown>, allowed: readonly string[], label: string): void {
   const permitted = new Set(allowed)

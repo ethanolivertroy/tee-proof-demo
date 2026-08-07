@@ -14,12 +14,9 @@ import {
   type SessionRecord,
   type WorkloadKeyset,
 } from './phala-aci'
+import { assert, isRecord } from './guards'
 import type { PhalaModelPolicy } from './policy'
 import type { CompletionReceipt } from './types'
-
-function assert(condition: unknown, message: string): asserts condition {
-  if (!condition) throw new Error(message)
-}
 
 function event(receipt: Receipt, type: string): ReceiptEvent {
   const found = receipt.event_log.find((entry) => entry.type === type)
@@ -36,11 +33,10 @@ export function assertResponseTransparency(receipt: Receipt): void {
 }
 
 function claimAsserted(claims: unknown, name: string, sources: readonly string[]): void {
-  assert(claims && typeof claims === 'object' && !Array.isArray(claims), 'Phala upstream claims are missing')
-  const claim = (claims as Record<string, unknown>)[name]
-  assert(claim && typeof claim === 'object' && !Array.isArray(claim), `Phala upstream claim is missing: ${name}`)
-  const typed = claim as Record<string, unknown>
-  assert(typed.status === 'asserted' && typeof typed.source === 'string' && sources.includes(typed.source), `Phala upstream claim is not acceptable: ${name}`)
+  assert(isRecord(claims), 'Phala upstream claims are missing')
+  const claim = claims[name]
+  assert(isRecord(claim), `Phala upstream claim is missing: ${name}`)
+  assert(claim.status === 'asserted' && typeof claim.source === 'string' && sources.includes(claim.source), `Phala upstream claim is not acceptable: ${name}`)
 }
 
 function bytesFromDataUri(value: string): Uint8Array {
@@ -77,7 +73,7 @@ export async function verifyPhalaCompletionReceipt(input: {
 }): Promise<PhalaReceiptVerification> {
   assert(/^rcpt-[0-9a-f]{24}$/.test(input.receiptId), 'Invalid Phala receipt id')
   const rawReceipt = await fetchJson(`/api/phala/receipts/${input.receiptId}`, input.policy.id, input.accessToken)
-  assert(rawReceipt && typeof rawReceipt === 'object' && !Array.isArray(rawReceipt), 'Invalid Phala receipt')
+  assert(isRecord(rawReceipt), 'Invalid Phala receipt')
   const receipt = rawReceipt as Receipt
   assert(receipt.api_version === 'aci/1' && receipt.receipt_id === input.receiptId, 'Phala receipt identity mismatch')
   assert(receipt.model === input.policy.model, 'Phala receipt model mismatch')
@@ -113,7 +109,7 @@ export async function verifyPhalaCompletionReceipt(input: {
   claimAsserted(upstream.claims, 'tcb_up_to_date', ['hardware_proven', 'verifier_derived'])
 
   const rawSession = await fetchJson(`/api/phala/sessions/${upstream.session_id}`, input.policy.id, input.accessToken)
-  assert(rawSession && typeof rawSession === 'object' && !Array.isArray(rawSession), 'Invalid Phala upstream session')
+  assert(isRecord(rawSession), 'Invalid Phala upstream session')
   const session = rawSession as SessionRecord & { api_version?: unknown; session_id?: unknown }
   assert(session.api_version === 'aci/1' && session.session_id === upstream.session_id, 'Phala session identity mismatch')
   assert(await computeSessionId(session) === upstream.session_id, 'Phala session content hash mismatch')

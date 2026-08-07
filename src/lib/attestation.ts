@@ -1,6 +1,7 @@
 import { sha256 } from '@noble/hashes/sha2.js'
 import { createRemoteJWKSet, jwtVerify, type JWTPayload } from 'jose'
 import { bytesToHex, textEncoder } from './encoding'
+import { asRecord, assert } from './guards'
 import { NVIDIA_ISSUER, NVIDIA_JWKS, type NearModelPolicy } from './policy'
 import type { AttestationReport, CpuEvidence, GpuEvidence } from './types'
 
@@ -8,15 +9,6 @@ interface CpuWorkerReply {
   ok: boolean
   evidence?: CpuEvidence
   error?: string
-}
-
-function assert(condition: unknown, message: string): asserts condition {
-  if (!condition) throw new Error(message)
-}
-
-function asRecord(value: unknown, message: string): Record<string, unknown> {
-  assert(value && typeof value === 'object' && !Array.isArray(value), message)
-  return value as Record<string, unknown>
 }
 
 function claimIsTrue(payload: JWTPayload, name: string): void {

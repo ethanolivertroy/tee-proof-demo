@@ -1,5 +1,6 @@
 import { getCollateralAndVerify } from '@phala/dcap-qvl'
 import { bytesToHex, concatBytes, equalBytes, hexToBytes } from './encoding'
+import { assert } from './guards'
 import { verifyDstackEvidence } from './phala-dstack'
 import { verifyReportBinding, sha256Hex, type AttestationReport as AciAttestationReport } from './phala-aci'
 import type { PhalaModelPolicy } from './policy'
@@ -29,10 +30,6 @@ interface PhalaWireReport extends AciAttestationReport {
     tee_type?: unknown
     evidence?: unknown
   }
-}
-
-function assert(condition: unknown, message: string): asserts condition {
-  if (!condition) throw new Error(message)
 }
 
 interface TdBody extends Omit<TdReport, 'type'> {}
