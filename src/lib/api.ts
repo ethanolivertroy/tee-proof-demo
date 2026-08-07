@@ -14,6 +14,7 @@ import { runVerifierInWorker } from './verifier-worker'
 
 export type TrustStage = 'fetching' | 'cpu' | 'gpu' | 'ready'
 export const EVIDENCE_TTL_MS = 5 * 60 * 1000
+const RECEIPT_ATTEMPTS = 6
 const RECEIPT_TIMEOUT_MS = 12_000
 const sleep = (milliseconds: number) => new Promise((resolve) => window.setTimeout(resolve, milliseconds))
 
@@ -163,7 +164,7 @@ function completionText(response: CompletionResponse): string {
 async function fetchNearSignature(chatId: string, modelId: string, accessToken: string): Promise<SignatureReport> {
   const query = new URLSearchParams({ model: modelId })
   let lastStatus = 0
-  for (let attempt = 0; attempt < 6; attempt += 1) {
+  for (let attempt = 0; attempt < RECEIPT_ATTEMPTS; attempt += 1) {
     const response = await fetch(`/api/signature/${encodeURIComponent(chatId)}?${query}`, { cache: 'no-store', headers: accessHeaders(accessToken) })
     if (response.ok) return response.json() as Promise<SignatureReport>
     lastStatus = response.status

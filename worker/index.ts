@@ -1,5 +1,5 @@
 import { isRecord } from '../src/lib/guards'
-import { getModelPolicy, isModelId, isNearPolicy, type ModelPolicy, type PhalaModelPolicy } from '../src/lib/policy'
+import { getModelPolicy, isModelId, isNearPolicy, MODEL_OPTIONS, type ModelPolicy, type PhalaModelPolicy } from '../src/lib/policy'
 
 const MAX_CHAT_BYTES = 64 * 1024
 const MAX_NRAS_BYTES = 256 * 1024
@@ -13,6 +13,11 @@ const EXACT_NEAR_CHAT_KEYS = new Set(['model', 'messages', 'max_tokens', 'stream
 const EXACT_PHALA_CHAT_KEYS = new Set(['model', 'messages', 'max_tokens', 'stream', 'provider'])
 const EXACT_PROVIDER_KEYS = new Set(['aci_verified'])
 const EXACT_MESSAGE_KEYS = new Set(['role', 'content'])
+// GPU evidence this Worker relays to NVIDIA NRAS: exactly the architecture and
+// device-count pairs the NEAR policies pin. policy.ts stays the single source
+// of measurement truth.
+const APPROVED_GPU_EVIDENCE = MODEL_OPTIONS.flatMap((policy) =>
+  isNearPolicy(policy) ? [{ arch: policy.gpuArchitecture, count: policy.gpuCount }] : [])
 
 type FetchLike = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>
 
@@ -281,7 +286,9 @@ async function proxyNras(request: Request, upstreamFetch: FetchLike): Promise<Re
   }
   try {
     const payload = JSON.parse(new TextDecoder().decode(body)) as Record<string, unknown>
-    if (payload.arch !== 'HOPPER' || !HEX_32.test(String(payload.nonce ?? '')) || !Array.isArray(payload.evidence_list) || payload.evidence_list.length !== 8) {
+    const approved = APPROVED_GPU_EVIDENCE.some(({ arch, count }) =>
+      payload.arch === arch && Array.isArray(payload.evidence_list) && payload.evidence_list.length === count)
+    if (!approved || !HEX_32.test(String(payload.nonce ?? ''))) {
       return jsonResponse({ error: 'Malformed GPU evidence' }, 400)
     }
   } catch {
