@@ -8,8 +8,6 @@ A small, browser-verifiable proof of confidential inference across two reviewed 
 
 ## Preview
 
-These are real browser captures from fresh, successful verification runs. No paid model completion was used to make them.
-
 <table>
   <tr>
     <th>NEAR AI Cloud · DeepSeek V4 Flash · desktop</th>
@@ -20,8 +18,6 @@ These are real browser captures from fresh, successful verification runs. No pai
     <td width="30%"><img src="docs/screenshots/verified-phala-mobile.png" alt="Mobile view showing Phala GPT-OSS selected and successful Intel TDX, measured source, dstack KMS, E2EE key, and receipt-key verification" /></td>
   </tr>
 </table>
-
-*The screenshots are illustrative captures. Every live run obtains a new challenge and fresh evidence; expired screenshot timestamps are not reused.*
 
 ## What it proves
 
