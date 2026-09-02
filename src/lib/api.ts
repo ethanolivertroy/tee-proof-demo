@@ -26,6 +26,15 @@ function exactKeys(value: Record<string, unknown>, allowed: readonly string[], l
   for (const key of Object.keys(value)) assert(permitted.has(key), `Unexpected ${label} field: ${key}`)
 }
 
+// Output fields each route's E2EE leaves in plaintext, so a non-null value
+// means the relay saw model output. e2ee-v2 §5 makes `reasoning` an encrypted
+// field on the Phala route, where the channel has already decrypted it or
+// failed closed before this parser runs.
+const PLAINTEXT_OUTPUT_FIELDS = ['tool_calls', 'function_call', 'refusal', 'annotations', 'audio']
+function plaintextOutputFields(policy: ModelPolicy): readonly string[] {
+  return policy.protocol === 'phala-aci-v2' ? PLAINTEXT_OUTPUT_FIELDS : [...PLAINTEXT_OUTPUT_FIELDS, 'reasoning']
+}
+
 export async function verifyDemoAccess(accessToken: string): Promise<void> {
   assert(accessToken.length >= 20 && accessToken.length <= 256, 'Access token must contain 20 to 256 characters')
   const response = await fetch('/api/access', { method: 'POST', headers: accessHeaders(accessToken), cache: 'no-store' })
@@ -60,7 +69,7 @@ export function parseCompletionResponse(value: unknown, policy: ModelPolicy): Co
   assertPlainObject(choice, 'Invalid completion choice')
   assertPlainObject(choice.message, 'Invalid completion message')
   assert(choice.message.role === 'assistant', 'Completion message role is not assistant')
-  for (const key of ['tool_calls', 'function_call', 'refusal', 'annotations', 'audio', 'reasoning']) {
+  for (const key of plaintextOutputFields(policy)) {
     assert(choice.message[key] === undefined || choice.message[key] === null, `Completion included an unsupported unencrypted field: ${key}`)
   }
   return value as unknown as CompletionResponse
@@ -186,10 +195,11 @@ export function assertEvidenceFresh(evidence: TrustEvidence): void {
   assert(evidence.policyDigest === bytesToHex(sha256(textEncoder.encode(canonicalPolicyText(policy)))), 'Local verification policy changed after verification')
 }
 
-function completionText(response: CompletionResponse): string {
+function completionText(response: CompletionResponse, policy: ModelPolicy): string {
   const message = response.choices[0]?.message
-  assert(!message || !Object.hasOwn(message, 'reasoning'), 'Completion included an unsupported unencrypted reasoning field')
-  const content = message?.content || message?.reasoning_content
+  const reasoningEncrypted = policy.protocol === 'phala-aci-v2'
+  assert(reasoningEncrypted || !message || !Object.hasOwn(message, 'reasoning'), 'Completion included an unsupported unencrypted reasoning field')
+  const content = message?.content || message?.reasoning_content || (reasoningEncrypted ? message?.reasoning : undefined)
   assert(typeof content === 'string' && content.length > 0, 'Completion contained no text')
   return content
 }
@@ -253,17 +263,22 @@ async function sendNearPrompt(prompt: string, evidence: NearTrustEvidence, polic
   const body = parseCompletionResponse(JSON.parse(responseText), policy)
   const signature = await fetchNearSignature(body.id, policy.id, accessToken)
   const receipt = verifyCompletionSignature(signature, evidence, policy, requestText, responseText)
-  return { content: decryptFromModel(completionText(body), client.x25519SecretKey), receipt }
+  return { content: decryptFromModel(completionText(body, policy), client.x25519SecretKey), receipt }
 }
 
 async function sendPhalaPrompt(prompt: string, evidence: PhalaTrustEvidence, policy: PhalaModelPolicy, accessToken: string): Promise<VerifiedCompletion> {
-  const binding = verifyReportBinding(evidence.raw, evidence.nonce, { trustPlatformClock: true })
+  // The stored report is re-bound before any key in it is used, so the keyset
+  // the channel encrypts to is still the one the quote committed to.
+  const binding = verifyReportBinding(evidence.raw, evidence.nonce)
   assert(binding.ok && binding.workloadKeysetDigest === evidence.gateway.workloadKeysetDigest, 'Phala keyset no longer matches verified trust evidence')
-  const channel = await openE2eeChannel(evidence.raw, binding, {
+  const channel = await openE2eeChannel(binding, {
     keyId: evidence.gateway.e2eeKeyId,
     algorithm: evidence.gateway.e2eeAlgorithm,
     publicKey: evidence.gateway.e2eePublicKey,
   })
+  // §5.3: `provider.aci_verified` demands a verified attested session. The
+  // aggregator consumes it, so `request.forwarded` will differ from
+  // `request.received`; the receipt audit expects that rewrite.
   const plaintext = {
     model: policy.model,
     messages: [{ role: 'user', content: prompt }],
@@ -284,18 +299,32 @@ async function sendPhalaPrompt(prompt: string, evidence: PhalaTrustEvidence, pol
   assert(receiptId, 'Phala completion omitted its receipt id')
   const opened = await channel.open(JSON.parse(responseWireBody) as Record<string, unknown>)
   const body = parseCompletionResponse(opened, policy)
+  // e2ee-v2 §8: the receipt hashes the compact restored body, where a
+  // decrypted content that parses as a JSON array is structured content (§5).
+  const restored = { ...plaintext, messages: [{ role: 'user', content: restoredContent(prompt) }] }
   const receipt = await verifyPhalaCompletionReceipt({
     receiptId,
     policy,
-    keyset: evidence.raw.attestation.workload_keyset,
-    plaintextRequestBody: JSON.stringify(plaintext),
+    keyset: binding.keyset!,
+    workloadKeysetDigest: evidence.gateway.workloadKeysetDigest,
+    plaintextRequestBody: JSON.stringify(restored),
     responseWireBody,
     accessToken,
     signal: AbortSignal.timeout(RECEIPT_TIMEOUT_MS),
   }).catch((reason: unknown) => {
     throw reason instanceof Error && reason.name === 'TimeoutError' ? new Error('Phala receipt verification timed out') : reason
   })
-  return { content: completionText(body), receipt }
+  return { content: completionText(body, policy), receipt }
+}
+
+function restoredContent(prompt: string): unknown {
+  try {
+    const parsed: unknown = JSON.parse(prompt)
+    if (Array.isArray(parsed)) return parsed
+  } catch {
+    // Not JSON: the service restores the plaintext as a string.
+  }
+  return prompt
 }
 
 export async function sendEncryptedPrompt(prompt: string, evidence: TrustEvidence, accessToken: string): Promise<VerifiedCompletion> {

@@ -165,7 +165,8 @@ function textFrom(v: unknown): string {
  * Decrypt string member `key` of `obj` at `field`, in place. A `null` member
  * carries no content and stays; any other non-string value could carry
  * plaintext the service was required to encrypt (e2ee-v2 §5), so it fails
- * closed. A string that is not well-formed ciphertext fails in `openField`.
+ * closed, as does a string that is not ciphertext under this request's AAD
+ * (a relay-visible plaintext string included).
  */
 async function openStr(
   obj: Json,
@@ -176,7 +177,11 @@ async function openStr(
   const value = obj[key]
   if (value === undefined || value === null) return
   if (typeof value !== 'string') throw new Error(`open: unsupported unencrypted response field ${field}`)
-  obj[key] = await decField(value, field)
+  try {
+    obj[key] = await decField(value, field)
+  } catch {
+    throw new Error(`open: response field ${field} is not ciphertext for this request`)
+  }
 }
 
 // `Uint8Array` to `BufferSource` (Web Crypto typings friction).

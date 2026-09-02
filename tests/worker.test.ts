@@ -87,7 +87,7 @@ describe('gated ciphertext-only Worker relay', () => {
     const paths = [
       `/api/signature/chat-12345678?model=${NEAR.id}`,
       `/api/phala/receipts/rcpt-0123456789abcdef01234567?model=${PHALA.id}`,
-      `/api/phala/sessions/as_${'a'.repeat(64)}?model=${PHALA.id}`,
+      `/api/phala/sessions/${'a'.repeat(64)}?model=${PHALA.id}`,
     ]
     for (const path of paths) {
       const response = await handleApiRequest(new Request(`https://app.test${path}`), makeEnv(), upstream)

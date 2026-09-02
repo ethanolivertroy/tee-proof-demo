@@ -16,13 +16,21 @@ export interface NearCompletionReceipt extends BaseCompletionReceipt {
   provider: 'near-ai'
 }
 
+/**
+ * A verified ACI receipt (spec/aci.md §7, §9.3). `requestHash` is
+ * `request.received.body_hash` over the plaintext request the browser
+ * restored; `responseHash` is `response.returned.body_hash` over the exact
+ * encrypted wire response; `signer` is the keyset digest and key id the
+ * signature resolved through; `signedText` is the JCS signing input.
+ */
 export interface PhalaCompletionReceipt extends BaseCompletionReceipt {
   provider: 'phala-cloud'
   receiptId: string
-  workloadId: string
   workloadKeysetDigest: string
-  upstreamProviderType: string
+  /** Content address of the attested upstream session the receipt cites (§8). */
   sessionId: string
+  /** Verified upstream origin recorded in that session (§8.2). */
+  upstreamEndpoint: string
 }
 
 export type CompletionReceipt = NearCompletionReceipt | PhalaCompletionReceipt
@@ -121,7 +129,6 @@ export interface PhalaGatewayEvidence {
   tcbStatus: string
   advisoryIds: string[]
   quoteType: string
-  workloadId: string
   workloadKeysetDigest: string
   sourceCommit: string
   appId: string
@@ -133,6 +140,8 @@ export interface PhalaGatewayEvidence {
   receiptAlgorithm: string
   receiptKeyId: string
   receiptPublicKey: string
+  /** SPKI digest the keyset lists for the endpoint hostname (§9.1 check 6). */
+  tlsSpkiSha256: string
   measurements: { mrtd: string; rtmr0: string; rtmr1: string; rtmr2: string; rtmr3: string; mrConfigId: string }
 }
 

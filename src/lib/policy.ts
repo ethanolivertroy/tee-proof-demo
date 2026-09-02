@@ -44,22 +44,31 @@ export interface NearModelPolicy extends BaseModelPolicy {
   measurementProfiles: readonly WorkloadMeasurements[]
 }
 
+/**
+ * The reviewed Phala gateway profile. ACI (spec/aci.md, cited from
+ * src/lib/phala-aci/index.ts) has no workload id: identity is the measured
+ * source provenance, the dstack app and Compose measurements, the KMS root
+ * that issued the keys, and the keyset entries the browser will use.
+ */
 export interface PhalaModelPolicy extends BaseModelPolicy {
   provider: 'phala-cloud'
   protocol: 'phala-aci-v2'
-  workloadId: string
-  /** ACI workload identity subject the gateway must present; null pins "no subject". */
+  /** Keyset `subject` the gateway must present (§3.1, §9.1 check 5); null pins "no subject". */
   expectedSubject: string | null
   e2eeAlgorithm: 'x25519-aes-256-gcm-hkdf-sha256'
   e2eeKeyId: string
   receiptAlgorithm: 'ed25519'
   receiptKeyId: string
+  /** Source the measured Compose must name (§4.1, §9.1 check 4). */
   sourceRepository: string
   sourceCommit: string
+  /** dstack app id and Compose hash measured into RTMR3. */
   appId: string
   composeHash: string
+  /** Compressed secp256k1 dstack KMS root that issued the receipt and E2EE keys (§3.3). */
   kmsRootPublicKey: string
-  requiredUpstreamProviderType: 'phala-direct'
+  /** `verifier_id` of the attested sessions the aggregator may cite (§8.2, §9.2). */
+  requiredUpstreamVerifierId: string
   measurementProfiles: readonly PhalaGatewayMeasurements[]
 }
 
@@ -128,7 +137,6 @@ export const MODEL_POLICIES = {
       { label: 'dstack + KMS', detail: 'Measured source, Compose, and key custody' },
       { label: 'Gateway keys', detail: 'E2EE and receipt keys bound to quote' },
     ],
-    workloadId: 'sha256:3def476b72026924f9d88f7b339b2e211553fc2486c6a974d5f330162f183eda',
     expectedSubject: null,
     e2eeAlgorithm: 'x25519-aes-256-gcm-hkdf-sha256',
     e2eeKeyId: 'dstack-kms-e2ee-x25519-v1',
@@ -139,7 +147,7 @@ export const MODEL_POLICIES = {
     appId: 'fdb7a14e5a6675f752e2cb69c9067a98ca402918',
     composeHash: '4496101140734539fb1e72c22252a0ba9992e3822b64d333a2452357a4adf0bb',
     kmsRootPublicKey: '0334c76e0c3f52ec64cbf9bbf5c910c272330166fd656c0a86bb330963e46910e1',
-    requiredUpstreamProviderType: 'phala-direct',
+    requiredUpstreamVerifierId: 'private-ai-verifier/phala-direct/v1',
     measurementProfiles: [PHALA_GATEWAY_PROFILE],
   },
 } as const satisfies Record<string, ModelPolicy>
@@ -180,7 +188,6 @@ export function canonicalPolicyText(policy: ModelPolicy): string {
   }
   return [
     ...common,
-    policy.workloadId,
     String(policy.expectedSubject),
     policy.e2eeAlgorithm,
     policy.e2eeKeyId,
@@ -191,7 +198,7 @@ export function canonicalPolicyText(policy: ModelPolicy): string {
     policy.appId,
     policy.composeHash,
     policy.kmsRootPublicKey,
-    policy.requiredUpstreamProviderType,
+    policy.requiredUpstreamVerifierId,
     ...policy.measurementProfiles.map(canonicalPhalaMeasurements),
   ].join('\n')
 }

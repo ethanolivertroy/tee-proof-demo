@@ -21,10 +21,13 @@ import {
   verifyReceipt,
   verifyReportBinding,
   type ReceiptEnvelope,
+  type ReportBindingOptions,
   type ReportVerification,
   type WorkloadKeyset,
 } from '../src/lib/phala-aci'
 import { bytesToHex, hexToBytes, textDecoder, textEncoder } from '../src/lib/encoding'
+
+const bs = (bytes: Uint8Array): BufferSource => bytes as BufferSource
 
 /**
  * Byte-exact vectors from spec/test-vectors.md and spec/e2ee-v2-test-vectors.md
@@ -136,7 +139,7 @@ describe('spec/test-vectors.md', () => {
     expect(verified.keyset).toBe(KEYSET)
     expect(verified.checks.map((check) => check.name)).toEqual(['api_version', 'workload_keyset_digest', 'report_data', 'not_after', 'not_after_bound'])
 
-    const failing = (mutated: typeof report, nonce = NONCE, options = { now }) =>
+    const failing = (mutated: typeof report, nonce = NONCE, options: ReportBindingOptions = { now }) =>
       verifyReportBinding(mutated, nonce, options).checks.filter((check) => !check.ok).map((check) => check.name)
     expect(failing(report, '11'.repeat(32))).toEqual(['report_data'])
     expect(failing({ ...report, workload_keyset_digest: 'sha256:' + '00'.repeat(32) })).toEqual(['workload_keyset_digest'])
@@ -223,10 +226,14 @@ describe('spec/e2ee-v2-test-vectors.md', () => {
     const blob = hexToBytes((sealed.body.messages as Array<{ content: string }>)[0]!.content)
     expect(blob.length).toBe(32 + 12 + 'hi'.length + 16)
     const shared = x25519.getSharedSecret(E2EE_SEED, blob.slice(0, 32))
-    const key = await crypto.subtle.importKey('raw', hkdf(sha256, shared, undefined, textEncoder.encode('aci.e2ee.v2.x25519'), 32), 'AES-GCM', false, ['decrypt'])
-    const aad = requestAad({ algo: ALGO, model: 'demo-model', field: 'messages.0.content', nonce: sealed.headers['X-E2EE-Nonce']!, ts: Number(sealed.headers['X-E2EE-Timestamp']) })
-    const plaintext = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: blob.slice(32, 44), additionalData: aad }, key, blob.slice(44))
-    expect(textDecoder.decode(plaintext)).toBe('hi')
-    await expect(crypto.subtle.decrypt({ name: 'AES-GCM', iv: blob.slice(32, 44), additionalData: requestAad({ ...context, field: 'messages.1.content', nonce: sealed.headers['X-E2EE-Nonce']!, ts: Number(sealed.headers['X-E2EE-Timestamp']) }) }, key, blob.slice(44))).rejects.toThrow()
+    const key = await crypto.subtle.importKey('raw', bs(hkdf(sha256, shared, undefined, textEncoder.encode('aci.e2ee.v2.x25519'), 32)), 'AES-GCM', false, ['decrypt'])
+    const sent = { nonce: sealed.headers['X-E2EE-Nonce']!, ts: Number(sealed.headers['X-E2EE-Timestamp']) }
+    const open = (field: string) => crypto.subtle.decrypt(
+      { name: 'AES-GCM', iv: bs(blob.slice(32, 44)), additionalData: bs(requestAad({ algo: ALGO, model: 'demo-model', field, ...sent })) },
+      key,
+      bs(blob.slice(44)),
+    )
+    expect(textDecoder.decode(await open('messages.0.content'))).toBe('hi')
+    await expect(open('messages.1.content')).rejects.toThrow()
   })
 })
