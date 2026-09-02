@@ -222,7 +222,7 @@ function App() {
                 value={accessToken}
                 minLength={20}
                 maxLength={256}
-                autoComplete="current-password"
+                autoComplete="off"
                 onChange={(event) => {
                   setAccessToken(event.target.value)
                   // Editing the token revokes an unlocked session and its evidence.
@@ -237,7 +237,7 @@ function App() {
                 {checkingAccess ? 'Checking…' : accessGranted ? 'Unlocked' : 'Unlock demo'}
               </button>
             </div>
-            <small>Kept only in this browser tab. Cloudflare Access can be added in front of the Worker for identity-based SSO.</small>
+            <small>This page holds the token in memory only. Cloudflare Access can be added in front of the Worker for identity-based SSO.</small>
           </form>
         </section>
 
