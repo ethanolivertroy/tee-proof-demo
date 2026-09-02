@@ -2,6 +2,7 @@ export const NEAR_ATTESTATION_REQUIRED_FIELDS = [
   'model_name',
   'signing_algo',
   'signing_public_key',
+  'signing_address',
   'request_nonce',
   'intel_quote',
   'nvidia_payload',
@@ -10,7 +11,6 @@ export const NEAR_ATTESTATION_REQUIRED_FIELDS = [
 
 export const NEAR_ATTESTATION_ALLOWED_FIELDS = [
   ...NEAR_ATTESTATION_REQUIRED_FIELDS,
-  'signing_address',
   'event_log',
   'all_attestations',
   'compose_manager_attestation',
