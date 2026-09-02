@@ -32,7 +32,6 @@ interface BaseModelPolicy {
   endpointLabel: string
   provider: ProviderId
   providerLabel: string
-  capturedAt: string
   /** Provider copy for the verification checklist, in completion order. */
   steps: readonly TrustStep[]
 }
@@ -75,18 +74,9 @@ const NEAR_COMMON = {
 } as const
 
 /**
- * Legacy build from the 2026-08-02 capture, when this endpoint served
- * Qwen 3.5 122B. Kept so replicas still presenting it verify during the
- * DeepSeek rollout. Retire this profile once fresh attestations stop
- * matching its rtmr3 and compose hash.
+ * The DeepSeek V4 Flash workload build. Captured from live attestation on
+ * 2026-08-06 and re-confirmed against the live endpoint on 2026-09-02.
  */
-const NEAR_LEGACY_QWEN_PROFILE: WorkloadMeasurements = {
-  ...NEAR_COMMON,
-  rtmr3: '18c28d262ab4733031c19fa1af233686e227a789955ba9dba2065b398c9f5dbfb76133d751dac412540dc5ac992b1b73',
-  composeHash: '66007399f064f058af68771c552bcae150c9f88622305631b5141da1aa2f7b7e',
-}
-
-/** Current build measured for the DeepSeek V4 Flash workload. */
 const DEEPSEEK_PROFILE: WorkloadMeasurements = {
   ...NEAR_COMMON,
   rtmr3: 'b59915c0d50b09151f1e7fd6d6b571feded8e45eab874fffdcbd1e0341fb60eb25e9a07404a5adcc918ad684564a30ea',
@@ -114,10 +104,9 @@ export const MODEL_POLICIES = {
     provider: 'near-ai',
     providerLabel: 'NEAR AI Cloud',
     protocol: 'near-e2ee-v2',
-    capturedAt: '2026-08-02',
     gpuArchitecture: NEAR_GPU_ARCHITECTURE,
     gpuCount: NEAR_GPU_COUNT,
-    measurementProfiles: [NEAR_LEGACY_QWEN_PROFILE, DEEPSEEK_PROFILE],
+    measurementProfiles: [DEEPSEEK_PROFILE],
     steps: [
       { label: 'Fresh challenge', detail: '32-byte browser nonce' },
       { label: 'Intel TDX', detail: 'Quote, debug state, and measurements' },
@@ -133,7 +122,6 @@ export const MODEL_POLICIES = {
     provider: 'phala-cloud',
     providerLabel: 'Phala Cloud',
     protocol: 'phala-aci-v2',
-    capturedAt: '2026-08-06',
     steps: [
       { label: 'Fresh challenge', detail: '32-byte browser nonce' },
       { label: 'Intel TDX', detail: 'Gateway quote, event log, and measurements' },
