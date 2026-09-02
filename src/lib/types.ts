@@ -23,12 +23,6 @@ export interface PhalaCompletionReceipt extends BaseCompletionReceipt {
   workloadKeysetDigest: string
   upstreamProviderType: string
   sessionId: string
-  /**
-   * Whether the signed cleartext hash also matched our re-serialization of the
-   * decrypted body. Reserialization drift is expected, so this is a diagnostic
-   * rather than a trust requirement; the wire hash check is the binding one.
-   */
-  cleartextResponseHashMatched: boolean
 }
 
 export type CompletionReceipt = NearCompletionReceipt | PhalaCompletionReceipt
@@ -116,25 +110,20 @@ export interface NearTrustEvidence extends BaseTrustEvidence {
   raw: AttestationReport
 }
 
+/**
+ * What the gateway verifier measured. Every value here was checked against the
+ * pinned policy before it was returned; the assertions in
+ * phala-verifier-core.ts and phala-dstack.ts are the evidence, so there are
+ * no pass/fail flags to restate them.
+ */
 export interface PhalaGatewayEvidence {
-  quoteAuthentic: boolean
   quoteHash: string
   tcbStatus: string
   advisoryIds: string[]
   quoteType: string
-  debugDisabled: boolean
-  nonceBound: boolean
-  identityBound: boolean
-  keysetDigestBound: boolean
-  keysetEndorsementValid: boolean
-  keysetFresh: boolean
-  measurementsPinned: boolean
-  eventLogReplayed: boolean
-  composeBoundToQuote: boolean
-  kmsIdentityCustodyValid: boolean
-  sourceProvenanceMatched: boolean
   workloadId: string
   workloadKeysetDigest: string
+  sourceCommit: string
   appId: string
   composeHash: string
   kmsRootPublicKey: string

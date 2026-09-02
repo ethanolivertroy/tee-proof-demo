@@ -1,7 +1,6 @@
 import {
   canonicalize,
   checkRequestBodyHash,
-  checkResponseCleartextHash,
   checkResponseWireHash,
   computeSessionId,
   hashBody,
@@ -53,7 +52,6 @@ export async function verifyPhalaCompletionReceipt(input: {
   keyset: WorkloadKeyset
   plaintextRequestBody: string
   responseWireBody: string
-  responseCleartextBody: string
   accessToken: string
   signal?: AbortSignal
 }): Promise<PhalaCompletionReceipt> {
@@ -78,11 +76,6 @@ export async function verifyPhalaCompletionReceipt(input: {
   assert(signature.ok, `Phala receipt signature failed: ${signature.checks.filter((check) => !check.ok).map((check) => check.name).join(', ')}`)
   assert(checkRequestBodyHash(receipt, input.plaintextRequestBody), 'Phala receipt request hash mismatch')
   assert(checkResponseWireHash(receipt, input.responseWireBody), 'Phala receipt response wire hash mismatch')
-  // `cleartext_hash` covers the provider's exact upstream serialization. After
-  // field-level E2EE decryption the browser has the same logical JSON but not the
-  // original whitespace/key-order bytes, so expose this comparison as a signed
-  // diagnostic rather than treating reserialization drift as a trust failure.
-  const cleartextResponseHashMatched = checkResponseCleartextHash(receipt, input.responseCleartextBody)
 
   const received = event(receipt, 'request.received')
   const forwarded = event(receipt, 'request.forwarded')
@@ -127,6 +120,5 @@ export async function verifyPhalaCompletionReceipt(input: {
     workloadKeysetDigest: receipt.workload_keyset_digest,
     upstreamProviderType: String(upstream.provider_type),
     sessionId: String(upstream.session_id),
-    cleartextResponseHashMatched,
   }
 }

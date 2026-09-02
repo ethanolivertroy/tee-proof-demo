@@ -290,7 +290,6 @@ async function sendPhalaPrompt(prompt: string, evidence: PhalaTrustEvidence, pol
     keyset: evidence.raw.attestation.workload_keyset,
     plaintextRequestBody: JSON.stringify(plaintext),
     responseWireBody,
-    responseCleartextBody: JSON.stringify(opened),
     accessToken,
     signal: AbortSignal.timeout(RECEIPT_TIMEOUT_MS),
   }).catch((reason: unknown) => {
