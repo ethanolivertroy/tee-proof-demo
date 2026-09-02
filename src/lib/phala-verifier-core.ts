@@ -31,6 +31,10 @@ interface TdReport {
 /** The dcap-qvl entry point, injectable so denial tests can run without Intel's collateral service. */
 export type QuoteVerifier = (quote: Uint8Array) => Promise<VerifiedReport>
 
+// Appendix B: the keyset shape is fixed and a new key role needs a new
+// protocol version, so an undefined member is rejected, not digested along.
+const KEYSET_MEMBERS = new Set(['subject', 'not_after', 'receipt_signing_keys', 'e2ee_public_keys', 'tls_public_keys'])
+
 export interface VerifyPhalaGatewayOptions {
   /** Current time in Unix seconds; defaults to the local clock. */
   now?: number
@@ -83,6 +87,7 @@ export async function verifyPhalaGateway(
   assert(binding.ok, `Phala ACI report binding failed: ${failedChecks(binding.checks)}`)
   const keyset = binding.keyset!
   const workloadKeysetDigest = binding.workloadKeysetDigest!
+  for (const member of Object.keys(keyset)) assert(KEYSET_MEMBERS.has(member), `Unexpected Phala keyset member: ${member}`)
   assert((keyset.subject ?? null) === policy.expectedSubject, 'Unexpected Phala workload subject')
 
   // §9.1 check 1: the quote verifies to Intel's root with a current TCB, the
