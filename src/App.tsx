@@ -150,7 +150,7 @@ function App() {
     setError('')
     setVerification(0)
     try {
-      const result = await establishTrust(modelId, setVerification)
+      const result = await establishTrust(modelId, accessToken, setVerification)
       setEvidence(result)
       setClock(Date.now())
     } catch (reason) {

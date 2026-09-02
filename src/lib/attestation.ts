@@ -2,6 +2,7 @@ import { sha256 } from '@noble/hashes/sha2.js'
 import { createRemoteJWKSet, jwtVerify, type JWTPayload } from 'jose'
 import { bytesToHex, textEncoder } from './encoding'
 import { asRecord, assert } from './guards'
+import { accessHeaders, fetchJson } from './http'
 import { NVIDIA_ISSUER, NVIDIA_JWKS, type NearModelPolicy } from './policy'
 import type { AttestationReport, CpuEvidence, GpuEvidence } from './types'
 import { runVerifierInWorker } from './verifier-worker'
@@ -66,6 +67,7 @@ async function verifyGpuAttestation(
   report: AttestationReport,
   requestedNonce: string,
   policy: NearModelPolicy,
+  accessToken: string,
 ): Promise<GpuEvidence> {
   const source = JSON.parse(report.nvidia_payload) as {
     nonce?: string
@@ -77,13 +79,11 @@ async function verifyGpuAttestation(
   assert(source.arch === policy.gpuArchitecture, `Unexpected NVIDIA architecture: ${String(source.arch)}`)
   assert(Array.isArray(source.evidence_list) && source.evidence_list.length === policy.gpuCount, 'Unexpected NVIDIA evidence count')
 
-  const response = await fetch('/api/nras', {
+  const bundle = await fetchJson('/api/nras', {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: { 'content-type': 'application/json', ...accessHeaders(accessToken) },
     body: report.nvidia_payload,
   })
-  if (!response.ok) throw new Error(`NVIDIA attestation service failed (${response.status})`)
-  const bundle = await response.json() as unknown
   assert(Array.isArray(bundle) && bundle.length === 2, 'Unexpected NVIDIA attestation bundle')
 
   const overallEntry = bundle[0]
@@ -142,11 +142,12 @@ export async function verifyAttestation(
   report: AttestationReport,
   requestedNonce: string,
   policy: NearModelPolicy,
+  accessToken: string,
   onStage?: (stage: 'cpu' | 'gpu') => void,
 ): Promise<{ cpu: CpuEvidence; gpu: GpuEvidence }> {
   onStage?.('cpu')
   const cpu = await verifyCpuInWorker(report, requestedNonce, policy)
   onStage?.('gpu')
-  const gpu = await verifyGpuAttestation(report, requestedNonce, policy)
+  const gpu = await verifyGpuAttestation(report, requestedNonce, policy, accessToken)
   return { cpu, gpu }
 }

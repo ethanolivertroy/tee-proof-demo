@@ -5,7 +5,7 @@ import { NEAR_ATTESTATION_ALLOWED_FIELDS, NEAR_ATTESTATION_REQUIRED_FIELDS } fro
 import { decryptFromModel, encryptForModel, generateClientKeys, sha256Hex, verifyEd25519Signature } from './crypto'
 import { bytesToHex, textEncoder } from './encoding'
 import { assert, assertNever, assertPlainObject } from './guards'
-import { accessHeaders, fetchJson } from './http'
+import { accessHeaders, fetchBounded, fetchJson } from './http'
 import { openE2eeChannel, verifyReportBinding, type AttestationReport as AciAttestationReport } from './phala-aci'
 import { verifyPhalaCompletionReceipt } from './phala-completion'
 import { canonicalPolicyText, getModelPolicy, type ModelId, type ModelPolicy, type NearModelPolicy, type PhalaModelPolicy } from './policy'
@@ -55,8 +55,23 @@ export function parseCompletionResponse(value: unknown, policy: ModelPolicy): Co
   }
   assert(typeof value.id === 'string' && value.id.length > 0, 'Completion id is missing')
   assert(value.model === policy.model, 'Completion model does not match the selected policy')
-  assert(Array.isArray(value.choices) && value.choices.length > 0, 'Completion choices are missing')
+  assert(Array.isArray(value.choices) && value.choices.length === 1, 'Completion must contain exactly one choice')
+  const choice: unknown = value.choices[0]
+  assertPlainObject(choice, 'Invalid completion choice')
+  assertPlainObject(choice.message, 'Invalid completion message')
+  assert(choice.message.role === 'assistant', 'Completion message role is not assistant')
+  for (const key of ['tool_calls', 'function_call', 'refusal', 'annotations', 'audio', 'reasoning']) {
+    assert(choice.message[key] === undefined || choice.message[key] === null, `Completion included an unsupported unencrypted field: ${key}`)
+  }
   return value as unknown as CompletionResponse
+}
+
+function parseSignatureReport(value: unknown): SignatureReport {
+  assertPlainObject(value, 'Invalid completion signature response')
+  for (const field of ['text', 'signature', 'signing_address', 'signing_algo']) {
+    assert(typeof value[field] === 'string', `Missing completion signature field: ${field}`)
+  }
+  return value as unknown as SignatureReport
 }
 
 export function parseNearAttestationResponse(value: unknown): AttestationReport {
@@ -82,14 +97,18 @@ function verifyPhalaInWorker(report: AciAttestationReport, requestedNonce: strin
   )
 }
 
-async function establishNearTrust(policy: NearModelPolicy, onStep?: OnStep): Promise<NearTrustEvidence> {
+function attestationPath(policy: ModelPolicy, nonce: string): string {
+  return `/api/attestation?model=${encodeURIComponent(policy.id)}&nonce=${encodeURIComponent(nonce)}`
+}
+
+async function establishNearTrust(policy: NearModelPolicy, accessToken: string, onStep?: OnStep): Promise<NearTrustEvidence> {
   const nonce = bytesToHex(randomBytes(32))
   onStep?.(0)
-  const report = parseNearAttestationResponse(await fetchJson(`/api/attestation?model=${encodeURIComponent(policy.id)}&nonce=${encodeURIComponent(nonce)}`, { cache: 'no-store' }))
+  const report = parseNearAttestationResponse(await fetchJson(attestationPath(policy, nonce), { headers: accessHeaders(accessToken) }))
   assert(report.model_name === policy.model, `Attestation model mismatch: ${report.model_name}`)
   assert(report.signing_algo === 'ed25519', `Unsupported completion signature algorithm: ${report.signing_algo}`)
   assert(/^[0-9a-f]{64}$/i.test(report.signing_public_key), 'Invalid Ed25519 completion key')
-  const { cpu, gpu } = await verifyAttestation(report, nonce, policy, (stage) => onStep?.(stage === 'cpu' ? 1 : 2))
+  const { cpu, gpu } = await verifyAttestation(report, nonce, policy, accessToken, (stage) => onStep?.(stage === 'cpu' ? 1 : 2))
   onStep?.(3)
   return {
     modelId: policy.id,
@@ -110,10 +129,10 @@ async function establishNearTrust(policy: NearModelPolicy, onStep?: OnStep): Pro
   }
 }
 
-async function establishPhalaTrust(policy: PhalaModelPolicy, onStep?: OnStep): Promise<PhalaTrustEvidence> {
+async function establishPhalaTrust(policy: PhalaModelPolicy, accessToken: string, onStep?: OnStep): Promise<PhalaTrustEvidence> {
   const nonce = bytesToHex(randomBytes(32))
   onStep?.(0)
-  const value = await fetchJson(`/api/attestation?model=${encodeURIComponent(policy.id)}&nonce=${encodeURIComponent(nonce)}`, { cache: 'no-store' })
+  const value = await fetchJson(attestationPath(policy, nonce), { headers: accessHeaders(accessToken) })
   assertPlainObject(value, 'Invalid Phala ACI attestation response')
   // The worker performs the quote, dstack, and key-custody checks in one pass.
   onStep?.(1)
@@ -136,15 +155,16 @@ async function establishPhalaTrust(policy: PhalaModelPolicy, onStep?: OnStep): P
   }
 }
 
-export async function establishTrust(modelId: ModelId, onProgress?: (progress: TrustProgress) => void): Promise<TrustEvidence> {
+export async function establishTrust(modelId: ModelId, accessToken: string, onProgress?: (progress: TrustProgress) => void): Promise<TrustEvidence> {
+  assert(accessToken.length >= 20, 'Access token is required')
   const policy = getModelPolicy(modelId)
   let evidence: TrustEvidence
   switch (policy.protocol) {
     case 'near-e2ee-v2':
-      evidence = await establishNearTrust(policy, onProgress)
+      evidence = await establishNearTrust(policy, accessToken, onProgress)
       break
     case 'phala-aci-v2':
-      evidence = await establishPhalaTrust(policy, onProgress)
+      evidence = await establishPhalaTrust(policy, accessToken, onProgress)
       break
     default:
       return assertNever(policy)
@@ -178,8 +198,8 @@ async function fetchNearSignature(chatId: string, modelId: string, accessToken: 
   const query = new URLSearchParams({ model: modelId })
   let lastStatus = 0
   for (let attempt = 0; attempt < RECEIPT_ATTEMPTS; attempt += 1) {
-    const response = await fetch(`/api/signature/${encodeURIComponent(chatId)}?${query}`, { cache: 'no-store', headers: accessHeaders(accessToken) })
-    if (response.ok) return response.json() as Promise<SignatureReport>
+    const { response, text } = await fetchBounded(`/api/signature/${encodeURIComponent(chatId)}?${query}`, { headers: accessHeaders(accessToken) })
+    if (response.ok) return parseSignatureReport(JSON.parse(text))
     lastStatus = response.status
     if (response.status !== 404) throw new Error(`Completion signature unavailable (${response.status})`)
     await sleep(150 * 2 ** attempt)
@@ -217,7 +237,7 @@ async function sendNearPrompt(prompt: string, evidence: NearTrustEvidence, polic
     stream: false,
   }
   const requestText = JSON.stringify(requestBody)
-  const response = await fetch(`/api/chat?model=${encodeURIComponent(policy.id)}`, {
+  const { response, text: responseText } = await fetchBounded(`/api/chat?model=${encodeURIComponent(policy.id)}`, {
     method: 'POST',
     headers: {
       'content-type': 'application/json',
@@ -229,7 +249,6 @@ async function sendNearPrompt(prompt: string, evidence: NearTrustEvidence, polic
     },
     body: requestText,
   })
-  const responseText = await response.text()
   if (!response.ok) throw new Error(`Encrypted completion failed (${response.status}): ${responseText.slice(0, 160)}`)
   const body = parseCompletionResponse(JSON.parse(responseText), policy)
   const signature = await fetchNearSignature(body.id, policy.id, accessToken)
@@ -253,12 +272,11 @@ async function sendPhalaPrompt(prompt: string, evidence: PhalaTrustEvidence, pol
     provider: { aci_verified: true },
   }
   const sealed = await channel.seal(plaintext)
-  const response = await fetch(`/api/chat?model=${encodeURIComponent(policy.id)}`, {
+  const { response, text: responseWireBody } = await fetchBounded(`/api/chat?model=${encodeURIComponent(policy.id)}`, {
     method: 'POST',
     headers: { 'content-type': 'application/json', ...accessHeaders(accessToken), ...sealed.headers },
     body: JSON.stringify(sealed.body),
   })
-  const responseWireBody = await response.text()
   if (!response.ok) throw new Error(`Phala completion failed (${response.status}): ${responseWireBody.slice(0, 180)}`)
   assert(response.headers.get('x-e2ee-applied') === 'true', 'Phala did not confirm E2EE response encryption')
   assert(response.headers.get('x-e2ee-version') === '2', 'Phala E2EE response version mismatch')

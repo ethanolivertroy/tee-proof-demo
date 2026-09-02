@@ -37,11 +37,22 @@ describe('fail-closed client protocol', () => {
   })
 
   it('accepts the selected response shape and rejects model or metadata substitutions', () => {
-    const valid = { id: 'chat-123', model: policy.model, choices: [{ message: { content: 'aa' } }] }
+    const valid = { id: 'chat-123', model: policy.model, choices: [{ message: { role: 'assistant', content: 'aa' } }] }
     expect(parseCompletionResponse(valid, policy).id).toBe('chat-123')
     expect(() => parseCompletionResponse({ ...valid, model: 'evil/model' }, policy)).toThrow(/model/)
     expect(() => parseCompletionResponse({ ...valid, prompt_text: 'leak' }, policy)).toThrow(/non-null/)
     expect(() => parseCompletionResponse({ ...valid, upstream_url: 'https://evil.test' }, policy)).toThrow(/Unexpected/)
+  })
+
+  it('rejects plaintext-bearing nested completion fields', () => {
+    const message = { role: 'assistant', content: 'aa' }
+    const withChoices = (choices: unknown[]) => ({ id: 'chat-123', model: policy.model, choices })
+    expect(() => parseCompletionResponse(withChoices([{ message }, { message }]), policy)).toThrow(/exactly one/)
+    expect(() => parseCompletionResponse(withChoices([{ message: { ...message, role: 'system' } }]), policy)).toThrow(/role/)
+    for (const key of ['tool_calls', 'refusal', 'function_call', 'annotations', 'audio', 'reasoning']) {
+      expect(() => parseCompletionResponse(withChoices([{ message: { ...message, [key]: 'leak' } }]), policy)).toThrow(key)
+    }
+    expect(parseCompletionResponse(withChoices([{ message: { ...message, tool_calls: null } }]), policy).id).toBe('chat-123')
   })
 
   it('authenticates the exact encrypted request and response bytes', () => {
