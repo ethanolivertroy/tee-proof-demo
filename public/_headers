@@ -1,31 +1,17 @@
-/
+/*
   Content-Security-Policy: default-src 'self'; connect-src 'self' https://nras.attestation.nvidia.com; img-src 'self' data:; style-src 'self'; script-src 'self'; worker-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; object-src 'none'
   Cross-Origin-Opener-Policy: same-origin
   Permissions-Policy: camera=(), microphone=(), geolocation=(), payment=(), usb=()
   Referrer-Policy: no-referrer
   X-Content-Type-Options: nosniff
 
-/index.html
-  Content-Security-Policy: default-src 'self'; connect-src 'self' https://nras.attestation.nvidia.com; img-src 'self' data:; style-src 'self'; script-src 'self'; worker-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; object-src 'none'
-  Cross-Origin-Opener-Policy: same-origin
-  Permissions-Policy: camera=(), microphone=(), geolocation=(), payment=(), usb=()
-  Referrer-Policy: no-referrer
-  X-Content-Type-Options: nosniff
-
-/assets/index-*.js
+/assets/*
   Cache-Control: public, max-age=31536000, immutable
-  Cross-Origin-Opener-Policy: same-origin
-  Referrer-Policy: no-referrer
-  X-Content-Type-Options: nosniff
-
-/assets/index-*.css
-  Cache-Control: public, max-age=31536000, immutable
-  Referrer-Policy: no-referrer
-  X-Content-Type-Options: nosniff
 
 /assets/cpu-verifier.worker-*.js
   ! Content-Security-Policy
-  Content-Security-Policy: default-src 'none'; connect-src https://pccs.phala.network https://api.trustedservices.intel.com; script-src 'self' 'unsafe-eval'; object-src 'none'
-  Referrer-Policy: no-referrer
-  X-Content-Type-Options: nosniff
-  Cache-Control: public, max-age=31536000, immutable
+  Content-Security-Policy: default-src 'none'; connect-src https://pccs.phala.network https://api.trustedservices.intel.com; script-src 'self'; object-src 'none'
+
+/assets/phala-verifier.worker-*.js
+  ! Content-Security-Policy
+  Content-Security-Policy: default-src 'none'; connect-src https://pccs.phala.network https://api.trustedservices.intel.com; script-src 'self'; object-src 'none'
