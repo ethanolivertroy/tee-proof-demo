@@ -1,9 +1,21 @@
 TEE Proof
 Copyright 2026 Ethan Troy
 
+Licensed under the Apache License, Version 2.0. See LICENSE.
+
 Browser-side Intel TDX verification, NVIDIA attestation appraisal, and NEAR
 E2EE v2 protocol code are adapted from Attested E2EE Chat, Copyright 2026
 Ethan Troy.
 
-This product includes open-source dependencies listed in package-lock.json.
-Their respective copyright and license notices remain applicable.
+The Phala ACI client under src/lib/phala-aci/ and the dstack evidence checks in
+src/lib/phala-dstack.ts are adapted from the reference verifier in
+https://github.com/Dstack-TEE/private-ai-gateway (clients/verifier-ts and
+spec/aci.md), Copyright the Dstack-TEE contributors, licensed under the Apache
+License, Version 2.0. The files were modified for this browser demo: Node-only
+transport and runtime code was removed, verification was re-targeted to the
+compiled policy in src/lib/policy.ts, and the module was trimmed to the checks
+this demo performs.
+
+Third-party packages bundled into the deployed application are listed with
+their license texts in THIRD_PARTY_NOTICES.txt, generated at build time from
+package-lock.json and served alongside the static assets.

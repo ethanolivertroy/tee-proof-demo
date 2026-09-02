@@ -10,3 +10,4 @@ dist/
 coverage/
 *.tsbuildinfo
 worker-configuration.d.ts
+public/THIRD_PARTY_NOTICES.txt
