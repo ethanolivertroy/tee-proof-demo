@@ -51,14 +51,25 @@ async function sha256(value: string): Promise<Uint8Array> {
   return new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value)))
 }
 
-/** Owner-token gate. Hashing both tokens makes the byte comparison constant-time. */
+const MIN_ACCESS_TOKEN_CHARS = 20
+const MAX_ACCESS_TOKEN_CHARS = 256
+
+function validAccessTokenShape(value: string): boolean {
+  return value.length >= MIN_ACCESS_TOKEN_CHARS && value.length <= MAX_ACCESS_TOKEN_CHARS
+}
+
+/**
+ * Owner-token gate for every /api route. A misconfigured expected token fails
+ * as 503 so a deployment mistake is not mistaken for a wrong password. Hashing
+ * both tokens makes the byte comparison constant-time.
+ */
 async function requireAccess(request: Request, env: Env): Promise<Response | null> {
   const expected = env.DEMO_ACCESS_TOKEN
-  if (!expected || expected.length < 20) {
+  if (!expected || !validAccessTokenShape(expected)) {
     return jsonResponse({ error: 'Demo access gate is not configured', code: 'missing_access_gate' }, 503)
   }
   const supplied = request.headers.get('x-demo-access-token') ?? ''
-  if (supplied.length >= 20 && supplied.length <= 256) {
+  if (validAccessTokenShape(supplied)) {
     const [expectedHash, suppliedHash] = await Promise.all([sha256(expected), sha256(supplied)])
     let difference = 0
     for (let index = 0; index < expectedHash.length; index += 1) difference |= expectedHash[index]! ^ suppliedHash[index]!
@@ -254,8 +265,6 @@ function chatStrategyFor(policy: ModelPolicy): ChatStrategy {
 
 async function proxyChat(request: Request, env: Env, upstreamFetch: FetchLike): Promise<Response> {
   if (request.method !== 'POST') return jsonResponse({ error: 'Method not allowed' }, 405)
-  const accessFailure = await requireAccess(request, env)
-  if (accessFailure) return accessFailure
   const policy = policyFromRequest(request)
   if (policy instanceof Response) return policy
   const apiKey = requireApiKey(env, policy)
@@ -344,8 +353,6 @@ const EVIDENCE_ROUTES = {
 
 async function proxyEvidence(request: Request, env: Env, upstreamFetch: FetchLike, route: EvidenceRoute, id: string): Promise<Response> {
   if (request.method !== 'GET') return jsonResponse({ error: 'Method not allowed' }, 405)
-  const accessFailure = await requireAccess(request, env)
-  if (accessFailure) return accessFailure
   const policy = policyFromRequest(request)
   if (policy instanceof Response) return policy
   if (policy.protocol !== route.protocol) return jsonResponse({ error: `${route.label} route is unavailable for this provider` }, 400)
@@ -390,11 +397,12 @@ async function proxyNras(request: Request, upstreamFetch: FetchLike): Promise<Re
 }
 
 export async function handleApiRequest(request: Request, env: Env, upstreamFetch: FetchLike = fetch): Promise<Response> {
+  const accessFailure = await requireAccess(request, env)
+  if (accessFailure) return accessFailure
   const url = new URL(request.url)
   if (url.pathname === '/api/access') {
     if (request.method !== 'POST') return jsonResponse({ error: 'Method not allowed' }, 405)
-    const accessFailure = await requireAccess(request, env)
-    return accessFailure ?? new Response(null, { status: 204, headers: { 'cache-control': 'no-store' } })
+    return new Response(null, { status: 204, headers: { 'cache-control': 'no-store' } })
   }
   if (url.pathname === '/api/attestation') return proxyAttestation(request, upstreamFetch)
   if (url.pathname === '/api/chat') return proxyChat(request, env, upstreamFetch)

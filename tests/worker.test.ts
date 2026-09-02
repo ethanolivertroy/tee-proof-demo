@@ -7,6 +7,7 @@ const PHALA = getModelPolicy('phala-gpt-oss-20b')
 const CIPHERTEXT = 'a'.repeat(160)
 const KEY = 'b'.repeat(64)
 const ACCESS = 'correct-owner-access-token-2026'
+const gated = { 'x-demo-access-token': ACCESS }
 
 function makeEnv(options: { near?: string | null; phala?: string | null; access?: string | null } = {}): Env {
   const near = options.near === undefined ? 'near-secret' : options.near
@@ -60,16 +61,24 @@ function phalaChatRequest(body = phalaBody(), access = ACCESS) {
 }
 
 describe('gated ciphertext-only Worker relay', () => {
-  it('requires the owner token before any provider-billed route', async () => {
+  it('requires the owner token before any /api route, including attestation relays', async () => {
     const upstream = vi.fn()
     const missingGate = await handleApiRequest(nearChatRequest(), makeEnv({ access: null }), upstream)
+    const shortGate = await handleApiRequest(nearChatRequest(), makeEnv({ access: 'too-short' }), upstream)
+    const longGate = await handleApiRequest(nearChatRequest(), makeEnv({ access: 'x'.repeat(257) }), upstream)
     const wrongToken = await handleApiRequest(nearChatRequest(undefined, 'wrong-token-that-is-long-enough'), makeEnv(), upstream)
     const accessCheck = await handleApiRequest(new Request('https://app.test/api/access', {
       method: 'POST', headers: { 'x-demo-access-token': ACCESS },
     }), makeEnv(), upstream)
+    const anonymousAttestation = await handleApiRequest(new Request(`https://app.test/api/attestation?model=${NEAR.id}&nonce=${'d'.repeat(64)}`), makeEnv(), upstream)
+    const anonymousNras = await handleApiRequest(new Request('https://app.test/api/nras', { method: 'POST', body: '{}' }), makeEnv(), upstream)
     expect(missingGate.status).toBe(503)
+    expect(shortGate.status).toBe(503)
+    expect(longGate.status).toBe(503)
     expect(wrongToken.status).toBe(401)
     expect(accessCheck.status).toBe(204)
+    expect(anonymousAttestation.status).toBe(401)
+    expect(anonymousNras.status).toBe(401)
     expect(upstream).not.toHaveBeenCalled()
   })
 
@@ -177,18 +186,19 @@ describe('gated ciphertext-only Worker relay', () => {
     const upstream = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => new Response('{}', { status: 200 }))
     const nonce = 'd'.repeat(64)
     for (const policy of [NEAR, PHALA]) {
-      const response = await handleApiRequest(new Request(`https://app.test/api/attestation?model=${policy.id}&nonce=${nonce}`), makeEnv(), upstream)
+      const response = await handleApiRequest(new Request(`https://app.test/api/attestation?model=${policy.id}&nonce=${nonce}`, { headers: gated }), makeEnv(), upstream)
       expect(response.status).toBe(200)
     }
     expect(String(upstream.mock.calls[0]?.[0])).toBe(`https://${NEAR.endpointLabel}/v1/attestation/report?signing_algo=ed25519&nonce=${nonce}`)
     expect(String(upstream.mock.calls[1]?.[0])).toBe(`https://${PHALA.endpointLabel}/v1/aci/attestation?nonce=${nonce}`)
+    for (const call of upstream.mock.calls) expect(new Headers(call[1]?.headers).has('x-demo-access-token')).toBe(false)
   })
 
   it('rejects unapproved models, malformed challenges, and arbitrary GPU verifier payloads', async () => {
     const upstream = vi.fn()
-    const unknown = await handleApiRequest(new Request(`https://app.test/api/attestation?model=evil&nonce=${'e'.repeat(64)}`), makeEnv(), upstream)
-    const badNonce = await handleApiRequest(new Request(`https://app.test/api/attestation?model=${NEAR.id}&nonce=short`), makeEnv(), upstream)
-    const badNras = await handleApiRequest(new Request('https://app.test/api/nras', { method: 'POST', body: JSON.stringify({ url: 'https://attacker.example' }) }), makeEnv(), upstream)
+    const unknown = await handleApiRequest(new Request(`https://app.test/api/attestation?model=evil&nonce=${'e'.repeat(64)}`, { headers: gated }), makeEnv(), upstream)
+    const badNonce = await handleApiRequest(new Request(`https://app.test/api/attestation?model=${NEAR.id}&nonce=short`, { headers: gated }), makeEnv(), upstream)
+    const badNras = await handleApiRequest(new Request('https://app.test/api/nras', { method: 'POST', headers: gated, body: JSON.stringify({ url: 'https://attacker.example' }) }), makeEnv(), upstream)
     expect(unknown.status).toBe(400)
     expect(badNonce.status).toBe(400)
     expect(badNras.status).toBe(400)
