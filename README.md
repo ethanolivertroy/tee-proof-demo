@@ -59,9 +59,9 @@ The browser connections show the visitor's IP address and timing to those partie
 | Provider | Fixed model | Browser verification | Exact completion authentication |
 | --- | --- | --- | --- |
 | NEAR AI Cloud | `deepseek-ai/DeepSeek-V4-Flash` | Intel TDX quote, measured workload, eight NVIDIA Hopper GPU verdicts, fresh nonce, and attested model key | Ed25519 signature over `model:SHA256(exact encrypted request bytes):SHA256(exact encrypted response bytes)` |
-| Phala Cloud | `openai/gpt-oss-20b` | Intel TDX quote, replayed event log, measured Compose and source commit, dstack KMS custody, fresh nonce, keyset digest and expiry, TLS SPKI binding, and ACI E2EE keys | Signed ACI receipt that binds the request hash, the encrypted wire response hash, the model, the endpoint, and the verified keyset digest |
+| Phala Cloud | `openai/gpt-oss-20b` | Intel TDX quote, replayed event log, measured Compose and source commit, dstack KMS custody, fresh nonce, keyset digest and expiry, TLS SPKI binding, and ACI E2EE keys | Signed ACI receipt that binds the plaintext request hash, the exact encrypted wire response hash, the model, the endpoint, the verified keyset digest, and the attested upstream session that served it |
 
-The two trust chains differ. On the NEAR route the browser verifies the TDX quote and the eight GPU verdicts itself. On the Phala route the browser verifies the gateway TDX quote and the dstack chain. Evidence about the upstream inference node arrives inside the signed receipt after the completion, so the browser does not verify that node's GPU directly.
+The two trust chains differ. On the NEAR route the browser verifies the TDX quote and the eight GPU verdicts itself. On the Phala route the browser verifies the gateway TDX quote and the dstack chain before it sends the prompt. After the completion, the signed receipt cites an attested upstream session. The browser fetches that session record, checks its content address, its verifier identity, its TLS binding, and its claims, but it does not audit the upstream node's GPU evidence itself. That audit is the pinned verifier's job.
 
 If you change the model, the demo removes the old evidence. The demo does not have these functions:
 
@@ -195,7 +195,7 @@ npm audit --omit=dev --audit-level=moderate
 
 The screenshots in the repository were made at the `1440×1000` and `390×844` viewports. They were made after successful live attestation verification. The full-page PNG dimensions are larger because the page has vertical scroll.
 
-The validation of this repository did not deploy a Cloudflare Worker. The validation did not start a paid confidential-model completion.
+Live attestation verification for both routes was re-run on 2026-09-02 against the current provider endpoints, with fresh nonces and real Intel collateral. The NEAR route was also verified in a browser against a local Worker. The Phala receipt and session audit are covered by fixture tests and by live audits of the public session records. The validation did not deploy a Cloudflare Worker and did not start a paid confidential-model completion, so the paid completion path is validated against fixtures only.
 
 ## Project map
 

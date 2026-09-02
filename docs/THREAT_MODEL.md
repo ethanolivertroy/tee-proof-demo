@@ -44,7 +44,7 @@ The Worker is not a hardware TEE. It sees ciphertext, request metadata, and prov
 - Stale, replayed, wrong-nonce, debug-mode, wrong-measurement, or wrong-device evidence.
 - A gateway or model whose keys are not the attested keys.
 - A NEAR completion signed by a key other than the fresh attested key, or whose signed text does not match the exact encrypted request and response bytes.
-- A Phala completion whose receipt is not signed by the attested receipt key, or whose receipt does not bind the request hash, the encrypted wire response hash, the model, the endpoint, and the verified keyset digest.
+- A Phala completion whose receipt is not signed by the attested receipt key, or whose receipt does not bind the plaintext request hash, the exact encrypted wire response hash, the model, the endpoint, the verified keyset digest, and an attested upstream session whose record the browser fetched and checked.
 - Anonymous use of the deployer's Worker to relay traffic to the providers or to NVIDIA.
 - Clickjacking or framing of the owner gate, on every path the app is served from.
 
@@ -56,7 +56,7 @@ The Worker is not a hardware TEE. It sees ciphertext, request metadata, and prov
 - A malicious workload that nevertheless matches an incorrectly approved policy.
 - Provider or project administrators changing routing or deleting infrastructure.
 - Exact model-weight substitution when the measured workload does not pin immutable weight bytes.
-- On the Phala route, the browser verifies the gateway. Evidence about the upstream inference node arrives inside the signed receipt after the completion, so the browser trusts the attested gateway to have enforced its own upstream policy.
+- On the Phala route, the browser verifies the gateway. The upstream inference node is represented by an attested session record that the receipt cites. The browser checks the record's content address, verifier identity, TLS binding, and claims, and leaves the deep audit of the node's evidence to that pinned verifier.
 - Owner-token disclosure. The gate is a shared secret, not identity-aware SSO, rate limiting, or a hard provider spending cap.
 
 ## Data boundary
