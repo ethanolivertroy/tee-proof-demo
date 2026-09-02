@@ -18,7 +18,7 @@
     "types": "wrangler types"
   },
   "dependencies": {
-    "@noble/ciphers": "^2.2.0",
+    "@noble/ciphers": "^2.3.0",
     "@noble/curves": "^2.2.0",
     "@noble/hashes": "^2.2.0",
     "@phala/dcap-qvl": "^0.6.1",
