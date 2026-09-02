@@ -92,13 +92,19 @@ const DEEPSEEK_PROFILE: WorkloadMeasurements = {
   composeHash: 'd98a2568546afce9ab53f7eb4d4b2058e5497e1efd05a8ad0934793043240ed7',
 }
 
+/**
+ * The Phala gateway build at private-ai-gateway commit d567f6b4 on dstack
+ * 0.5.9. Captured on 2026-09-02 from a live attestation whose TDX quote
+ * verified UpToDate against Intel collateral and whose event log replayed to
+ * this rtmr3; mrConfigId is 0x01 followed by the Compose hash.
+ */
 const PHALA_GATEWAY_PROFILE: PhalaGatewayMeasurements = {
   mrtd: 'f06dfda6dce1cf904d4e2bab1dc370634cf95cefa2ceb2de2eee127c9382698090d7a4a13e14c536ec6c9c3c8fa87077',
-  rtmr0: 'd6118f0eeb30e9d9178d2b9106dddd002d979b6fa79bdec415051afae2021384c29a32d2f6454fa369617598378ffb5e',
+  rtmr0: '46a83f6bbbeaa274aaf04861ef47d7e8898d4e699126b642f72f582e8d7f5349cb266a188bbabf619940d4fece06594b',
   rtmr1: '07e6f51aa763abfe75c3ddfbf4f425fe3f0ceff66d807a75e049303dce9addf68e7218729bd419638af63a370f65878c',
-  rtmr2: 'a2a58c9a959a4fa44bd6da0c97a2270c051faf12084cfe91ae900e4fdff6cdd4f69a82005e04ee920f231497894d677f',
-  rtmr3: '58512f7be22b1dbd1c509e6aa0ad98ad2b5f1ede285355c0f97ebfa119f8538c4163d9d0ae347abb4d7bc557889b20aa',
-  mrConfigId: '014496101140734539fb1e72c22252a0ba9992e3822b64d333a2452357a4adf0bb000000000000000000000000000000',
+  rtmr2: 'df67e467e60edc1737bcf8e682d48131bfb427f523226aa7f197a7608e9b3784783fa759ef5b28191fa12f9ddb36b858',
+  rtmr3: '44131a0bf6d0ddd13fe8aa7947ad7578d8114e4cbb80d9e7b2a077f817d250f29f316d85f2391a262af994cdd0d43595',
+  mrConfigId: '01973994308e4b6e3993cb3ec33b9d91ee2e6228f83594da0fbbda5bc00f656330000000000000000000000000000000',
 }
 
 const NEAR_GPU_ARCHITECTURE = 'HOPPER'
@@ -143,9 +149,9 @@ export const MODEL_POLICIES = {
     receiptAlgorithm: 'ed25519',
     receiptKeyId: 'dstack-kms-receipt-ed25519-v1',
     sourceRepository: 'https://github.com/Dstack-TEE/private-ai-gateway.git',
-    sourceCommit: 'aa65d64c191949b8df7b1ebe210f5b8f8a8e6b99',
+    sourceCommit: 'd567f6b4c4d93e33037ea202db04db86a8ad881c',
     appId: 'fdb7a14e5a6675f752e2cb69c9067a98ca402918',
-    composeHash: '4496101140734539fb1e72c22252a0ba9992e3822b64d333a2452357a4adf0bb',
+    composeHash: '973994308e4b6e3993cb3ec33b9d91ee2e6228f83594da0fbbda5bc00f656330',
     kmsRootPublicKey: '0334c76e0c3f52ec64cbf9bbf5c910c272330166fd656c0a86bb330963e46910e1',
     requiredUpstreamVerifierId: 'private-ai-verifier/phala-direct/v1',
     measurementProfiles: [PHALA_GATEWAY_PROFILE],
