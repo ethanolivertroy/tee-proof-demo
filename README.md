@@ -154,15 +154,16 @@ Browser                         Cloudflare Worker                    Confidentia
 - The endpoint allowlist and the model allowlist are exact and compiled.
 - The browser examines the Intel TDX collateral. The browser rejects evidence from debug mode.
 - The browser examines the NEAR workload measurements. The policy accepts only the exact signed verdicts from eight NVIDIA GPUs.
-- The browser examines the Phala workload ID, the measurements, the measured Compose hash, the measured source commit, the KMS custody, the E2EE key, the receipt key, and the TLS binding.
-- The quote verification is a large computation. A browser worker does this computation in isolation.
+- The browser examines the Phala measurements, the replayed event log, the measured Compose hash, the measured source commit, the KMS custody, the keyset digest and expiry, the E2EE key, the receipt key, and the TLS binding.
+- The quote verification is a large computation. A browser worker does this computation in isolation. The worker bundles contain no `eval`, and their Content Security Policy permits connections only to the Intel and Phala collateral endpoints.
 - The browser does not release the prompt before the selected policy is verified.
 - The evidence becomes invalid when the model changes or when the time limit is reached.
-- The browser makes sure that the exact completion bytes are correct after decryption.
-- The response schemas are strict. They reject unknown metadata and metadata that contains plaintext.
-- The Worker body limits apply also when there is no `Content-Length`. The Worker cancels a stream immediately when the stream is larger than the limit.
-- The Worker examines the access token before it uses the provider credentials or the paid upstream routes.
+- The browser authenticates the exact encrypted request bytes and response bytes with the attested key before it shows the decrypted completion.
+- The response schemas are strict. They reject unknown fields, more than one choice, and nested fields that can carry plaintext, such as `tool_calls` or `refusal`.
+- The Worker body limits apply also when there is no `Content-Length`. The Worker cancels a stream immediately when the stream is larger than the limit. The browser applies the same streaming cap to every response it reads from the Worker.
+- The Worker examines the access token on every `/api` route before it does anything else.
 - The provider credentials stay in the Worker secrets. The Worker does not send the credentials to the browser.
+- Every path the app is served from carries the same security headers, including `frame-ancestors 'none'`.
 
 ## Important limits
 
@@ -176,8 +177,11 @@ This proof does **not** show:
 - that access control is related to identity, if you do not turn on Cloudflare Access;
 - that there is a fixed limit on costs, or that the providers are always available;
 - that IP addresses, timing, ciphertext length, or other traffic metadata are hidden;
-- that trust in the provider, Intel, NVIDIA, the certificate authority, Cloudflare, or the code review is not necessary; or
+- that trust in the provider, Intel, NVIDIA, the certificate authority, Cloudflare, or the code review is not necessary;
+- that the browser verifies the Phala upstream inference node directly. That evidence arrives inside the signed receipt; or
 - that Cloudflare Workers operate in the hardware TEE that the demo shows.
+
+[docs/THREAT_MODEL.md](docs/THREAT_MODEL.md) states the full claim ladder for both routes.
 
 The Phala measurements and the NEAR measurements can change after a reviewed deployment. This change can be correct. The demo then fails closed. The demo stays closed until the new evidence and the measured source are qualified again, and the compiled policy is updated.
 
@@ -196,19 +200,22 @@ The validation of this repository did not deploy a Cloudflare Worker. The valida
 ## Project map
 
 ```text
-src/App.tsx                         fixed two-provider proof UI and owner gate
+src/App.tsx                        fixed two-provider proof UI and owner gate
 src/lib/policy.ts                  compiled provider/model/measurement policies
+src/lib/http.ts                    the one bounded client boundary to the Worker
 src/lib/attestation.ts             NEAR Intel TDX + NVIDIA verification flow
 src/lib/phala-verifier-core.ts     Phala TDX, dstack, KMS, key, and source checks
-src/lib/phala-aci/                 Phala ACI binding, E2EE, and receipt primitives
+src/lib/phala-aci/                 Phala ACI client adapted from Dstack-TEE/private-ai-gateway
 src/lib/crypto.ts                  browser E2EE and Ed25519 response verification
 worker/index.ts                    gated, origin-pinned ciphertext relay
-public/_headers                    browser security headers
+public/_headers                    security headers for every path and both verifier workers
+scripts/third-party-notices.mjs    generates THIRD_PARTY_NOTICES.txt at build time
+docs/THREAT_MODEL.md               two-route claim ladder and boundary
 docs/screenshots/                  committed desktop and mobile previews
 tests/                             crypto, Worker, protocol, and Phala hardening tests
 ```
 
-See [SECURITY.md](SECURITY.md) for the report instructions and the current dependency note.
+See [SECURITY.md](SECURITY.md) for the report instructions and the current dependency note. See [NOTICE](NOTICE) for provenance of the adapted code.
 
 ## License
 
