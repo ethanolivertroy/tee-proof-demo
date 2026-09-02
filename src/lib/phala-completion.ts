@@ -1,132 +1,150 @@
+/**
+ * Phala completion audit: spec/aci.md §9.3 checks 1-6 plus the §9.2 session
+ * audit for the aggregator hop (sections cited from ./phala-aci/index.ts).
+ * Inputs are the receipt id the response carried, the keyset established by
+ * verifyPhalaGateway, the plaintext request the browser restored, and the
+ * exact encrypted response bytes it received. Every failure throws.
+ */
+
 import {
-  canonicalize,
   checkRequestBodyHash,
-  checkResponseCleartextHash,
-  checkResponseWireHash,
+  checkResponseBodyHash,
+  checkSessionApiVersion,
+  checkSessionEvidence,
   computeSessionId,
-  hashBody,
+  findEvent,
   receiptSigningBytes,
-  sha256Prefixed,
   verifyReceipt,
-  type JcsValue,
-  type Receipt,
+  type ReceiptEnvelope,
   type ReceiptEvent,
+  type ReceiptPayload,
   type SessionRecord,
   type WorkloadKeyset,
 } from './phala-aci'
-import { assert, isRecord } from './guards'
+import { assert, assertPlainObject, isRecord } from './guards'
 import { accessHeaders, fetchJson } from './http'
 import type { PhalaModelPolicy } from './policy'
 import type { PhalaCompletionReceipt } from './types'
 
-function event(receipt: Receipt, type: string): ReceiptEvent {
-  const found = receipt.event_log.find((entry) => entry.type === type)
+const RECEIPT_ID = /^rcpt-[0-9a-f]{24}$/
+const SESSION_ID = /^[0-9a-f]{64}$/
+const DIGEST = /^sha256:[0-9a-f]{64}$/
+
+function requireEvent(payload: ReceiptPayload, type: string): ReceiptEvent {
+  const found = findEvent(payload, type)
   assert(found, `Phala receipt is missing ${type}`)
   return found
 }
 
-export function assertResponseTransparency(receipt: Receipt): void {
-  const returned = event(receipt, 'response.returned')
-  const received = receipt.event_log.find((entry) => entry.type === 'response.received')
-  const cleartextChanged = received !== undefined && received.cleartext_hash !== returned.cleartext_hash
-  const wireChanged = returned.wire_hash !== returned.cleartext_hash
-  if (cleartextChanged || wireChanged) event(receipt, 'transparency.response_modified')
+/**
+ * §9.3 check 5 and §7.5: exactly one `upstream.verified` event records
+ * verified, required serving of the requested model and cites a session.
+ * Best-effort (`required: false`) or failed serving is refused.
+ */
+export function requireVerifiedUpstream(payload: ReceiptPayload, model: string): { sessionId: string } {
+  const events = payload.event_log.filter((event) => event.type === 'upstream.verified')
+  assert(events.length > 0, 'Phala receipt records no upstream verification')
+  const verified = events.filter((event) => event.result === 'verified')
+  assert(verified.length === 1, 'Phala receipt does not record exactly one verified upstream')
+  const event = verified[0]!
+  assert(event.required === true, 'Phala upstream verification was not required')
+  assert(event.model_id === model, 'Phala upstream model mismatch')
+  assert(typeof event.session_id === 'string' && SESSION_ID.test(event.session_id), 'Phala upstream session id is invalid')
+  return { sessionId: event.session_id }
 }
 
-function claimAsserted(claims: unknown, name: string, sources: readonly string[]): void {
-  assert(isRecord(claims), 'Phala upstream claims are missing')
+function claimAsserted(claims: Record<string, unknown>, name: string, sources: readonly string[]): void {
   const claim = claims[name]
   assert(isRecord(claim), `Phala upstream claim is missing: ${name}`)
   assert(claim.status === 'asserted' && typeof claim.source === 'string' && sources.includes(claim.source), `Phala upstream claim is not acceptable: ${name}`)
 }
 
-function bytesFromDataUri(value: string): Uint8Array {
-  const match = /^data:[^,]*;base64,([A-Za-z0-9+/=]+)$/.exec(value)
-  assert(match, 'Phala session evidence is not a base64 data URI')
-  const binary = atob(match[1]!)
-  return Uint8Array.from(binary, (char) => char.charCodeAt(0))
+/**
+ * §9.2 checks 1-3 and the §9.3 check 6 window: the fetched record hashes to
+ * the cited id, is `aci/1`, carries evidence that hashes to its digest, was
+ * produced by the pinned verifier over an HTTPS origin it TLS-pinned, asserts
+ * the hardware and GPU claims this policy demands, and covers `served_at`.
+ * The deep audit (§9.2 check 4) is out of scope for this demo: the upstream
+ * NEAR-style evidence is left for the pinned verifier.
+ */
+export function auditSession(record: unknown, sessionId: string, servedAt: number, policy: PhalaModelPolicy): SessionRecord {
+  assertPlainObject(record, 'Invalid Phala upstream session')
+  const session = record as unknown as SessionRecord
+  assert(checkSessionApiVersion(session), 'Phala session api_version is not aci/1')
+  assert(computeSessionId(session) === sessionId, 'Phala session content hash mismatch')
+  assert(session.verifier_id === policy.requiredUpstreamVerifierId, `Unexpected Phala upstream verifier: ${String(session.verifier_id)}`)
+  assert(typeof session.endpoint === 'string' && session.endpoint.startsWith('https://'), 'Phala upstream origin is not HTTPS')
+  assert(Array.isArray(session.channel_binding) && session.channel_binding.some((binding) =>
+    isRecord(binding) && binding.type === 'tls_spki_sha256' && binding.origin === session.endpoint
+    && typeof binding.spki_sha256 === 'string' && /^[0-9a-f]{64}$/.test(binding.spki_sha256)), 'Phala session is not TLS-pinned to its upstream origin')
+  assert(isRecord(session.claims), 'Phala upstream claims are missing')
+  claimAsserted(session.claims, 'tee_attested', ['hardware_proven'])
+  claimAsserted(session.claims, 'gpu_attested', ['verifier_derived'])
+  claimAsserted(session.claims, 'tcb_up_to_date', ['hardware_proven', 'verifier_derived'])
+  assert(Number.isSafeInteger(session.established_at) && Number.isSafeInteger(session.expires_at), 'Phala session validity window is invalid')
+  assert(servedAt >= session.established_at && servedAt <= session.expires_at, 'Phala receipt was served outside the session validity window')
+  assert(isRecord(session.evidence) && typeof session.evidence.digest === 'string' && DIGEST.test(session.evidence.digest), 'Phala session evidence digest is missing or invalid')
+  assert(checkSessionEvidence(session.evidence), 'Phala session evidence does not hash to its digest')
+  return session
 }
 
 export async function verifyPhalaCompletionReceipt(input: {
   receiptId: string
   policy: PhalaModelPolicy
   keyset: WorkloadKeyset
+  workloadKeysetDigest: string
   plaintextRequestBody: string
   responseWireBody: string
-  responseCleartextBody: string
   accessToken: string
   signal?: AbortSignal
 }): Promise<PhalaCompletionReceipt> {
-  assert(/^rcpt-[0-9a-f]{24}$/.test(input.receiptId), 'Invalid Phala receipt id')
+  assert(RECEIPT_ID.test(input.receiptId), 'Invalid Phala receipt id')
   const fetchEvidence = (path: string) => fetchJson(`${path}?model=${encodeURIComponent(input.policy.id)}`, {
-    cache: 'no-store',
     headers: accessHeaders(input.accessToken),
     signal: input.signal,
   })
-  const rawReceipt = await fetchEvidence(`/api/phala/receipts/${input.receiptId}`)
-  assert(isRecord(rawReceipt), 'Invalid Phala receipt')
-  const receipt = rawReceipt as Receipt
-  assert(receipt.api_version === 'aci/1' && receipt.receipt_id === input.receiptId, 'Phala receipt identity mismatch')
+  const document = await fetchEvidence(`/api/phala/receipts/${input.receiptId}`)
+  assertPlainObject(document, 'Invalid Phala receipt')
+  assert(typeof document.key_id === 'string' && typeof document.signature === 'string', 'Phala receipt is unsigned')
+  assert(document.key_id === input.policy.receiptKeyId, 'Phala receipt used an unapproved signing key')
+
+  // §9.3 checks 1 and 2.
+  const verified = verifyReceipt(document as ReceiptEnvelope, input.keyset, input.workloadKeysetDigest)
+  assert(verified.ok, `Phala receipt verification failed: ${verified.checks.filter((check) => !check.ok).map((check) => check.name).join(', ')}`)
+  const receipt = verified.payload
+  assert(receipt.receipt_id === input.receiptId, 'Phala receipt identity mismatch')
   assert(receipt.model === input.policy.model, 'Phala receipt model mismatch')
   assert(receipt.endpoint === '/v1/chat/completions' && receipt.method === 'POST', 'Phala receipt endpoint mismatch')
-  assert(Array.isArray(receipt.event_log) && receipt.event_log.length >= 4, 'Phala receipt event log is incomplete')
-  receipt.event_log.forEach((entry, index) => assert(entry.seq === index, 'Phala receipt event sequence is invalid'))
+  assert(Number.isSafeInteger(receipt.served_at), 'Phala receipt served_at is invalid')
+  assert(Array.isArray(receipt.event_log) && receipt.event_log.every((event) => isRecord(event) && typeof event.type === 'string'), 'Phala receipt event log is invalid')
   assert(receipt.event_log[0]?.type === 'request.received', 'Phala receipt does not begin with request.received')
-  assert(receipt.signature.key_id === input.policy.receiptKeyId && receipt.signature.algo === input.policy.receiptAlgorithm, 'Phala receipt used an unapproved signing key')
 
-  const signature = verifyReceipt(receipt, input.keyset)
-  assert(signature.ok, `Phala receipt signature failed: ${signature.checks.filter((check) => !check.ok).map((check) => check.name).join(', ')}`)
+  // §9.3 checks 3 and 4 under the e2ee-v2 §8 rules: the request hash covers
+  // the restored plaintext body, the response hash the encrypted wire bytes.
   assert(checkRequestBodyHash(receipt, input.plaintextRequestBody), 'Phala receipt request hash mismatch')
-  assert(checkResponseWireHash(receipt, input.responseWireBody), 'Phala receipt response wire hash mismatch')
-  // `cleartext_hash` covers the provider's exact upstream serialization. After
-  // field-level E2EE decryption the browser has the same logical JSON but not the
-  // original whitespace/key-order bytes, so expose this comparison as a signed
-  // diagnostic rather than treating reserialization drift as a trust failure.
-  const cleartextResponseHashMatched = checkResponseCleartextHash(receipt, input.responseCleartextBody)
+  assert(checkResponseBodyHash(receipt, input.responseWireBody), 'Phala receipt response hash mismatch')
+  // The prompt was forwarded, so the forwarded hash must be present. It differs
+  // from request.received because the aggregator consumes the §5.3 serving
+  // constraint before forwarding, which the spec defines as the visible rewrite.
+  const forwarded = requireEvent(receipt, 'request.forwarded')
+  assert(typeof forwarded.body_hash === 'string' && DIGEST.test(forwarded.body_hash), 'Phala receipt forwarded hash is invalid')
 
-  const received = event(receipt, 'request.received')
-  const forwarded = event(receipt, 'request.forwarded')
-  if (received.body_hash !== forwarded.body_hash) event(receipt, 'transparency.request_modified')
-  assertResponseTransparency(receipt)
+  // §9.3 checks 5 and 6.
+  const { sessionId } = requireVerifiedUpstream(receipt, input.policy.model)
+  const session = auditSession(await fetchEvidence(`/api/phala/sessions/${sessionId}`), sessionId, receipt.served_at, input.policy)
 
-  const upstream = event(receipt, 'upstream.verified')
-  assert(upstream.required === true && upstream.result === 'verified', 'Phala upstream verification was not required and successful')
-  assert(upstream.provider_type === input.policy.requiredUpstreamProviderType, `Unexpected Phala upstream verifier: ${String(upstream.provider_type)}`)
-  assert(upstream.model_id === input.policy.model, 'Phala upstream model mismatch')
-  assert(typeof upstream.url_origin === 'string' && upstream.url_origin.startsWith('https://'), 'Phala upstream origin is not HTTPS')
-  assert(typeof upstream.session_id === 'string' && /^as_[0-9a-f]{64}$/.test(upstream.session_id), 'Phala upstream session id is invalid')
-  claimAsserted(upstream.claims, 'tee_attested', ['hardware_proven'])
-  claimAsserted(upstream.claims, 'gpu_attested', ['verifier_derived'])
-  claimAsserted(upstream.claims, 'tcb_up_to_date', ['hardware_proven', 'verifier_derived'])
-
-  const rawSession = await fetchEvidence(`/api/phala/sessions/${upstream.session_id}`)
-  assert(isRecord(rawSession), 'Invalid Phala upstream session')
-  const session = rawSession as SessionRecord & { api_version?: unknown; session_id?: unknown }
-  assert(session.api_version === 'aci/1' && session.session_id === upstream.session_id, 'Phala session identity mismatch')
-  assert(computeSessionId(session) === upstream.session_id, 'Phala session content hash mismatch')
-  assert(session.endpoint === upstream.url_origin && session.verifier_id === 'private-ai-verifier/phala-direct/v1', 'Phala session verifier or endpoint mismatch')
-  assert(canonicalize(session.channel_binding as JcsValue) === canonicalize(upstream.channel_bindings as JcsValue), 'Phala session channel binding mismatch')
-  assert(canonicalize(session.claims as JcsValue) === canonicalize(upstream.claims as JcsValue), 'Phala session claims mismatch')
-  assert(session.evidence && typeof session.evidence === 'object', 'Phala session evidence commitment is missing')
-  assert(typeof session.evidence.digest === 'string' && /^sha256:[0-9a-f]{64}$/.test(session.evidence.digest), 'Phala session evidence digest is missing or invalid')
-  assert(typeof session.evidence.data === 'string', 'Phala session evidence bytes are missing')
-  assert(sha256Prefixed(bytesFromDataUri(session.evidence.data)) === session.evidence.digest, 'Phala session evidence digest mismatch')
-
-  const responseReturned = event(receipt, 'response.returned')
   return {
     provider: 'phala-cloud',
     model: input.policy.model,
-    requestHash: String(received.body_hash),
-    responseHash: String(responseReturned.wire_hash ?? hashBody(input.responseWireBody)),
-    signer: `${receipt.workload_id}#${receipt.signature.key_id}`,
-    signature: receipt.signature.value,
-    signedText: new TextDecoder().decode(receiptSigningBytes(receipt)),
+    requestHash: String(requireEvent(receipt, 'request.received').body_hash),
+    responseHash: String(requireEvent(receipt, 'response.returned').body_hash),
+    signer: `${receipt.workload_keyset_digest}#${receipt.key_id}`,
+    signature: document.signature,
+    signedText: new TextDecoder().decode(receiptSigningBytes(document as ReceiptEnvelope)),
     verifiedAt: new Date().toISOString(),
     receiptId: receipt.receipt_id,
-    workloadId: receipt.workload_id,
     workloadKeysetDigest: receipt.workload_keyset_digest,
-    upstreamProviderType: String(upstream.provider_type),
-    sessionId: String(upstream.session_id),
-    cleartextResponseHashMatched,
+    sessionId,
+    upstreamEndpoint: session.endpoint as string,
   }
 }

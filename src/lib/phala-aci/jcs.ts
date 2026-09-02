@@ -1,7 +1,7 @@
 /**
  * JSON Canonicalization Scheme (RFC 8785) for the ACI subset.
  *
- * ACI restricts JSON numbers to integers (§3), so this omits ECMAScript number
+ * ACI restricts JSON numbers to integers (Appendix A), so this omits ECMAScript number
  * formatting and instead *rejects* non-integer numbers: a conformant ACI object
  * never contains one, and rejecting is safer than silently mis-serializing. For
  * strings we reuse `JSON.stringify`, whose escaping is exactly RFC 8785's
@@ -32,7 +32,7 @@ export function canonicalize(value: JcsValue): string {
     case 'number':
       if (!Number.isSafeInteger(value)) {
         throw new AciFormatError(
-          `JCS: ACI restricts numbers to safe integers, got ${value} (§3)`,
+          `JCS: ACI restricts numbers to safe integers, got ${value} (Appendix A)`,
         )
       }
       // -0 canonicalizes to "0".

@@ -1,70 +1,74 @@
 /**
- * ACI verifier primitives for this demo's reviewed Phala profile.
+ * ACI (Attested Confidential Inference) verifier primitives for this demo's
+ * reviewed Phala profile.
  *
- * Level 1 receipt verification (§10.2) is implemented against an established
- * keyset. {@link verifyReportBinding} adds the cryptographic-binding checks of
- * Level 2 (§10.1 checks 2-6); hardware quote, key custody, and provenance checks
- * (§10.1 checks 1, 7-10) are composed in `phala-verifier-core.ts`. Hashing and
- * signature verification use the same `@noble` primitives as the rest of
- * src/lib (see ../crypto and ../encoding); the E2EE channel uses Web Crypto
- * X25519 + AES-GCM.
+ * Provenance: adapted from https://github.com/Dstack-TEE/private-ai-gateway
+ * `clients/verifier-ts` and `spec/aci.md` at commit
+ * 898f19f36978102aade8785632eb36f8d4459337 (2026-09-01), Apache-2.0, modified
+ * for this browser demo: hashing and signatures use the same `@noble`
+ * primitives as the rest of src/lib instead of Web Crypto, the E2EE v2 channel
+ * (`spec/e2ee-v2.md` at the same commit) is implemented here because the
+ * upstream package only verifies, and a keyset-lifetime bound is enforced.
+ *
+ * Every `§` citation in this directory refers to `spec/aci.md` at that commit
+ * unless it is prefixed `e2ee-v2`, which refers to `spec/e2ee-v2.md`. Byte
+ * exact expectations come from `spec/test-vectors.md` and
+ * `spec/e2ee-v2-test-vectors.md`.
+ *
+ * Scope: report binding (§9.1 checks 2-3), receipts and body hashes (§9.3),
+ * attested sessions (§8, §9.2), and the E2EE v2 channel. The hardware quote
+ * (§9.1 check 1), dstack provenance and custody (checks 4-5), and the declared
+ * TLS channel (check 6) are composed in ../phala-verifier-core.ts and
+ * ../phala-dstack.ts.
  */
 
-// Canonicalization (§3)
+// Canonicalization (Appendix A)
 export { canonicalize, jcsBytes } from './jcs'
 export type { JcsValue } from './jcs'
 
-// Signature verification under attested keys, and ACI's error-typed hex decoding
-export { fromHex, verifySignature } from './crypto'
+// Decoding and Ed25519 verification under attested keys
+export { fromBase64, fromHex, verifyEd25519 } from './crypto'
 
-// Digest & canonical-signing-bytes constructions (§4, §8.5, §9.2)
+// Digest constructions (Appendix A, §3.1, §3.2, §7.2)
 export {
+  attestationStatement,
   computeKeysetDigest,
   computeReportData,
-  computeSessionId,
-  computeWorkloadId,
-  keysetEndorsementPayload,
   receiptSigningBytes,
+  reportDataSlot,
   sha256Prefixed,
 } from './digest'
 
-// E2EE AAD builders (§7.3)
+// Attested sessions: content addressing and evidence (§8, §9.2)
+export { checkSessionApiVersion, checkSessionEvidence, computeSessionId } from './session'
+
+// Receipt verification (§9.3)
+export { checkRequestBodyHash, checkResponseBodyHash, findEvent, hashBody, verifyReceipt } from './receipt'
+
+// Report binding (§9.1 checks 2-3, no hardware quote)
+export { MAX_KEYSET_LIFETIME_SECONDS, verifyReportBinding } from './report'
+export type { ReportBindingOptions } from './report'
+
+// E2EE v2 AAD builders and channel (e2ee-v2 §4-§6)
 export { requestAad, responseAad } from './e2ee'
 export type { AadCommon } from './e2ee'
-
-// E2EE channel to a verified workload: encrypt requests, decrypt replies (§7)
 export { openE2eeChannel } from './e2ee-channel'
 export type { ApprovedE2eeKey, E2eeChannel } from './e2ee-channel'
 
-// Level 1 receipt verification (§10.2)
-export {
-  checkRequestBodyHash,
-  checkResponseCleartextHash,
-  checkResponseWireHash,
-  findEvent,
-  hashBody,
-  verifyReceipt,
-} from './receipt'
-
-// Level 2 report-binding checks (§10.1 checks 2-6, no hardware quote)
-export { verifyReportBinding } from './report'
-export type { ReportBindingOptions } from './report'
-
 // Errors
-export { AciError, AciFormatError, UnsupportedAlgorithmError } from './errors'
+export { AciError, AciFormatError } from './errors'
 
 // Wire & result types
 export type {
-  PublicKey,
-  WorkloadIdentity,
-  ReceiptSigningKey,
+  KeysetKey,
+  TlsKeyPin,
   WorkloadKeyset,
-  ReceiptSignature,
-  ReceiptEvent,
-  Receipt,
-  Endorsement,
+  SourceProvenance,
   Attestation,
   AttestationReport,
+  ReceiptEnvelope,
+  ReceiptEvent,
+  ReceiptPayload,
   SessionEvidence,
   SessionRecord,
   Check,

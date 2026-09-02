@@ -1,14 +1,23 @@
-import { getCollateralAndVerify } from '@phala/dcap-qvl'
+/**
+ * The reviewed Phala verifier profile: spec/aci.md §9.1 (cited from
+ * ./phala-aci/index.ts) composed with the dstack `tdx` evidence policy. The
+ * hardware check runs Intel DCAP QVL against Intel's collateral; the vendored
+ * client does the keyset, statement, and expiry arithmetic; ./phala-dstack.ts
+ * does provenance and custody. Every failure throws, so a caller cannot use a
+ * report that did not pass all of it.
+ */
+
+import { getCollateralAndVerify, type VerifiedReport } from '@phala/dcap-qvl'
 import { sha256Hex } from './crypto'
-import { bytesToHex, concatBytes, equalBytes, hexToBytes } from './encoding'
-import { assert } from './guards'
-import { verifyDstackEvidence } from './phala-dstack'
-import { verifyReportBinding, type AttestationReport as AciAttestationReport, type JcsValue } from './phala-aci'
+import { bytesToHex, equalBytes, hexToBytes } from './encoding'
+import { assert, isRecord } from './guards'
+import { verifyDstackEvidence, type ApprovedCustodyKey } from './phala-dstack'
+import { reportDataSlot, verifyReportBinding, type AttestationReport, type KeysetKey } from './phala-aci'
 import type { PhalaModelPolicy } from './policy'
 import type { PhalaGatewayEvidence } from './types'
 
 interface TdReport {
-  type: 'TD10' | 'TD15'
+  type: 'td10' | 'td15'
   mrTd: Uint8Array
   rtMr0: Uint8Array
   rtMr1: Uint8Array
@@ -19,39 +28,82 @@ interface TdReport {
   tdAttributes: Uint8Array
 }
 
-interface E2eeKey {
-  key_id: string
-  algo: string
-  public_key: string
+/** The dcap-qvl entry point, injectable so denial tests can run without Intel's collateral service. */
+export type QuoteVerifier = (quote: Uint8Array) => Promise<VerifiedReport>
+
+// Appendix B: the keyset shape is fixed and a new key role needs a new
+// protocol version, so an undefined member is rejected, not digested along.
+const KEYSET_MEMBERS = new Set(['subject', 'not_after', 'receipt_signing_keys', 'e2ee_public_keys', 'tls_public_keys'])
+
+export interface VerifyPhalaGatewayOptions {
+  /** Current time in Unix seconds; defaults to the local clock. */
+  now?: number
+  verifyQuote?: QuoteVerifier
 }
 
-interface PhalaWireReport extends AciAttestationReport {
-  service_capabilities?: { supported_e2ee_versions?: JcsValue; [key: string]: JcsValue | undefined }
-  attestation: AciAttestationReport['attestation'] & {
-    vendor?: unknown
-    tee_type?: unknown
-    evidence?: unknown
-  }
+// `Report.asTd10()` also returns the base of a TD 1.5 report, so the type tag
+// comes from the report itself rather than from which accessor answered.
+function extractTdReport(verified: VerifiedReport): TdReport | null {
+  const type = verified.report.type
+  if (type !== 'td10' && type !== 'td15') return null
+  const body = verified.report.asTd10()
+  return body ? { ...body, type } : null
 }
 
-interface TdBody extends Omit<TdReport, 'type'> {}
-
-interface QuoteReportView {
-  asTd10(): TdBody | null
-  asTd15(): { base: TdBody } | null
+function measurementsMatch(measured: PhalaGatewayEvidence['measurements'], policy: PhalaModelPolicy): boolean {
+  return policy.measurementProfiles.some((profile) => Object.entries(profile).every(([key, value]) => measured[key as keyof typeof measured] === value))
 }
 
-function extractTdReport(report: unknown): TdReport | null {
-  if (!report || typeof report !== 'object' || !('asTd10' in report) || !('asTd15' in report)) return null
-  const view = report as QuoteReportView
-  const td10 = view.asTd10()
-  if (td10) return { ...td10, type: 'TD10' }
-  const td15 = view.asTd15()?.base
-  return td15 ? { ...td15, type: 'TD15' } : null
+/** §3.1: clients select keys by `algo`; this profile pins the exact `key_id` too. */
+function selectKey(entries: unknown, keyId: string, algo: string, label: string): KeysetKey {
+  assert(Array.isArray(entries), `Attested ${label} key list is missing`)
+  const key = entries.find((entry) => isRecord(entry) && entry.key_id === keyId)
+  assert(isRecord(key) && key.algo === algo && typeof key.public_key === 'string', `Approved ${label} key is missing or changed`)
+  return key as unknown as KeysetKey
 }
 
-function measurementsMatch(td: TdReport, policy: PhalaModelPolicy): boolean {
-  const measured = {
+function failedChecks(checks: readonly { name: string; ok: boolean }[]): string {
+  return checks.filter((check) => !check.ok).map((check) => check.name).join(', ')
+}
+
+export async function verifyPhalaGateway(
+  report: AttestationReport,
+  requestedNonce: string,
+  policy: PhalaModelPolicy,
+  options: VerifyPhalaGatewayOptions = {},
+): Promise<{ evidence: PhalaGatewayEvidence; expiresAt: string }> {
+  const now = options.now ?? Math.floor(Date.now() / 1000)
+  const verifyQuote = options.verifyQuote ?? ((quote: Uint8Array) => getCollateralAndVerify(quote))
+
+  assert(isRecord(report) && isRecord(report.attestation), 'Invalid Phala ACI report')
+  assert(report.api_version === 'aci/1', 'Unsupported Phala ACI report version')
+  assert(report.attestation.tee_type === 'tdx', 'Phala gateway is not reporting Intel TDX')
+  const capabilities = report.service_capabilities
+  assert(isRecord(capabilities) && Array.isArray(capabilities.supported_e2ee_versions) && capabilities.supported_e2ee_versions.includes('2'), 'Phala ACI E2EE v2 is unavailable')
+  assert(capabilities.serving === 'aggregator', 'Phala gateway is not serving as an ACI aggregator')
+
+  // §9.1 checks 2 and 3: keyset -> digest -> statement -> report_data, then expiry.
+  const binding = verifyReportBinding(report, requestedNonce, { now })
+  assert(binding.ok, `Phala ACI report binding failed: ${failedChecks(binding.checks)}`)
+  const keyset = binding.keyset!
+  const workloadKeysetDigest = binding.workloadKeysetDigest!
+  for (const member of Object.keys(keyset)) assert(KEYSET_MEMBERS.has(member), `Unexpected Phala keyset member: ${member}`)
+  assert((keyset.subject ?? null) === policy.expectedSubject, 'Unexpected Phala workload subject')
+
+  // §9.1 check 1: the quote verifies to Intel's root with a current TCB, the
+  // TD is not debuggable, and its report-data slot carries `report_data`.
+  const evidence = report.attestation.evidence
+  assert(isRecord(evidence) && typeof evidence.quote === 'string' && typeof evidence.quote_report_data === 'string', 'Phala TDX quote evidence is missing')
+  const quote = hexToBytes(evidence.quote)
+  const verifiedQuote = await verifyQuote(quote)
+  assert(verifiedQuote.status === 'UpToDate', `Phala Intel TCB is not current: ${verifiedQuote.status}`)
+  const td = extractTdReport(verifiedQuote)
+  assert(td, 'Phala evidence is not a supported TDX quote')
+  assert(td.tdAttributes.length > 0 && (td.tdAttributes[0]! & 1) === 0, 'Phala TDX debug mode is enabled')
+  assert(equalBytes(td.reportData, reportDataSlot(report.attestation.report_data)), 'Phala ACI report digest is not bound to the TDX quote')
+  assert(equalBytes(td.reportData, hexToBytes(evidence.quote_report_data)), 'Phala quote report-data evidence disagrees with the quote')
+
+  const measurements = {
     mrtd: bytesToHex(td.mrTd),
     rtmr0: bytesToHex(td.rtMr0),
     rtmr1: bytesToHex(td.rtMr1),
@@ -59,88 +111,37 @@ function measurementsMatch(td: TdReport, policy: PhalaModelPolicy): boolean {
     rtmr3: bytesToHex(td.rtMr3),
     mrConfigId: bytesToHex(td.mrConfigId),
   }
-  return policy.measurementProfiles.some((profile) => Object.entries(profile).every(([key, value]) => measured[key as keyof typeof measured] === value))
-}
+  assert(measurementsMatch(measurements, policy), 'Phala gateway measurements are not approved')
 
-function selectKey(entries: unknown, keyId: string, algo: string, label: string): E2eeKey {
-  assert(Array.isArray(entries), `Attested ${label} key list is missing`)
-  const key = entries.find((entry) => entry && typeof entry === 'object' && (entry as Record<string, unknown>).key_id === keyId) as Record<string, unknown> | undefined
-  assert(key && key.algo === algo && typeof key.public_key === 'string', `Approved ${label} key is missing or changed`)
-  return key as unknown as E2eeKey
-}
-
-export async function verifyPhalaGateway(
-  report: AciAttestationReport,
-  requestedNonce: string,
-  policy: PhalaModelPolicy,
-): Promise<{ evidence: PhalaGatewayEvidence; expiresAt: string }> {
-  const wire = report as PhalaWireReport
-  assert(wire.api_version === 'aci/1', 'Unsupported Phala ACI report version')
-  assert(wire.attestation.tee_type === 'tdx', 'Phala gateway is not reporting Intel TDX')
-  assert(wire.workload_id === policy.workloadId, `Phala workload is not approved: ${wire.workload_id}`)
-  assert((wire.attestation.workload_keyset.workload_identity.subject ?? null) === policy.expectedSubject, 'Unexpected Phala workload subject')
-  const capabilities = wire.service_capabilities
-  assert(Array.isArray(capabilities?.supported_e2ee_versions) && capabilities.supported_e2ee_versions.includes('2'), 'Phala ACI E2EE v2 is unavailable')
-
-  const binding = verifyReportBinding(report, requestedNonce, { trustPlatformClock: true })
-  assert(binding.ok, `Phala ACI report binding failed: ${binding.checks.filter((check) => !check.ok).map((check) => check.name).join(', ')}`)
-  assert(binding.workloadId === policy.workloadId, 'Derived Phala workload id is not approved')
-
-  const evidence = wire.attestation.evidence as Record<string, unknown>
-  assert(evidence && typeof evidence.quote === 'string' && typeof evidence.quote_report_data === 'string', 'Phala TDX quote evidence is missing')
-  const verifiedQuote = await getCollateralAndVerify(hexToBytes(evidence.quote))
-  assert(verifiedQuote.status === 'UpToDate', `Phala Intel TCB is not current: ${verifiedQuote.status}`)
-  const td = extractTdReport(verifiedQuote.report)
-  assert(td, 'Phala evidence is not a supported TDX quote')
-  assert(td.tdAttributes[0] != null && (td.tdAttributes[0] & 1) === 0, 'Phala TDX debug mode is enabled')
-
-  const expectedReportData = concatBytes(hexToBytes(wire.attestation.report_data), new Uint8Array(32))
-  assert(equalBytes(td.reportData, expectedReportData), 'Phala ACI report digest is not bound to the TDX quote')
-  assert(equalBytes(td.reportData, hexToBytes(evidence.quote_report_data)), 'Phala quote report-data evidence disagrees with the quote')
-  assert(measurementsMatch(td, policy), 'Phala gateway measurements are not approved')
-
-  const keyset = wire.attestation.workload_keyset
-  const identityPublicKey = keyset.workload_identity.public_key.public_key
-  const dstack = verifyDstackEvidence(evidence, identityPublicKey, td.rtMr3, policy)
-
+  // §9.1 check 6 (E2EE half) and the receipt key the §9.3 checks will resolve.
   const e2eeKey = selectKey(keyset.e2ee_public_keys, policy.e2eeKeyId, policy.e2eeAlgorithm, 'E2EE')
   const receiptKey = selectKey(keyset.receipt_signing_keys, policy.receiptKeyId, policy.receiptAlgorithm, 'receipt')
   assert(hexToBytes(e2eeKey.public_key).length === 32, 'Phala X25519 public key length is invalid')
   assert(hexToBytes(receiptKey.public_key).length === 32, 'Phala Ed25519 receipt key length is invalid')
 
-  const tlsEntries = keyset.tls_public_keys
-  const downstream = evidence.downstream_tls_binding as Record<string, unknown>
-  assert(Array.isArray(tlsEntries) && downstream?.domain === policy.endpointLabel && typeof downstream.spki_sha256 === 'string', 'Phala downstream TLS binding is missing')
-  assert(tlsEntries.some((entry) => entry && typeof entry === 'object' && (entry as Record<string, unknown>).domain === policy.endpointLabel && (entry as Record<string, unknown>).spki_sha256 === downstream.spki_sha256), 'Phala TLS binding is not in the attested keyset')
+  // §9.1 checks 4 and 5: measured provenance and KMS custody for both keys.
+  const approvedKeys: ApprovedCustodyKey[] = [
+    { role: 'receipt', algo: receiptKey.algo, publicKey: receiptKey.public_key },
+    { role: 'e2ee-x25519', algo: e2eeKey.algo, publicKey: e2eeKey.public_key },
+  ]
+  const dstack = verifyDstackEvidence(evidence, td.rtMr3, approvedKeys, report.attestation.source_provenance, policy)
 
-  const freshness = wire.attestation.freshness
-  const epoch = keyset.keyset_epoch
-  assert(typeof freshness?.stale_after === 'number' && typeof epoch.not_after === 'number', 'Phala report expiry is missing')
-  const expiresAtSeconds = Math.min(freshness.stale_after, epoch.not_after)
-  assert(expiresAtSeconds * 1000 > Date.now(), 'Phala trust evidence is expired')
+  // §9.1 check 6 (TLS half): the SPKI the keyset lists for the hostname the
+  // browser talks to is the one the evidence says this deployment pins.
+  const downstream = evidence.downstream_tls_binding
+  assert(isRecord(downstream) && downstream.domain === policy.endpointLabel && typeof downstream.spki_sha256 === 'string' && /^[0-9a-f]{64}$/.test(downstream.spki_sha256), 'Phala downstream TLS binding is missing')
+  const tlsEntries = keyset.tls_public_keys
+  assert(Array.isArray(tlsEntries) && tlsEntries.some((entry) => isRecord(entry) && entry.domain === policy.endpointLabel && entry.spki_sha256 === downstream.spki_sha256), 'Phala TLS binding is not in the attested keyset')
 
   return {
-    expiresAt: new Date(expiresAtSeconds * 1000).toISOString(),
+    expiresAt: new Date(keyset.not_after * 1000).toISOString(),
     evidence: {
-      quoteAuthentic: true,
-      quoteHash: sha256Hex(hexToBytes(evidence.quote)),
+      quoteHash: sha256Hex(quote),
       tcbStatus: verifiedQuote.status,
       advisoryIds: [...verifiedQuote.advisory_ids],
       quoteType: td.type,
-      debugDisabled: true,
-      nonceBound: true,
-      identityBound: true,
-      keysetDigestBound: true,
-      keysetEndorsementValid: true,
-      keysetFresh: true,
-      measurementsPinned: true,
-      eventLogReplayed: true,
-      composeBoundToQuote: true,
-      kmsIdentityCustodyValid: true,
-      sourceProvenanceMatched: dstack.sourceRepository.replace(/\.git$/u, '') === policy.sourceRepository.replace(/\.git$/u, '')
-        && dstack.sourceCommit === policy.sourceCommit,
-      workloadId: binding.workloadId,
-      workloadKeysetDigest: binding.workloadKeysetDigest,
+      workloadKeysetDigest,
+      sourceCommit: dstack.sourceCommit,
       appId: dstack.appId,
       composeHash: dstack.composeHash,
       kmsRootPublicKey: dstack.kmsRootPublicKey,
@@ -150,14 +151,8 @@ export async function verifyPhalaGateway(
       receiptAlgorithm: receiptKey.algo,
       receiptKeyId: receiptKey.key_id,
       receiptPublicKey: receiptKey.public_key,
-      measurements: {
-        mrtd: bytesToHex(td.mrTd),
-        rtmr0: bytesToHex(td.rtMr0),
-        rtmr1: bytesToHex(td.rtMr1),
-        rtmr2: bytesToHex(td.rtMr2),
-        rtmr3: bytesToHex(td.rtMr3),
-        mrConfigId: bytesToHex(td.mrConfigId),
-      },
+      tlsSpkiSha256: downstream.spki_sha256,
+      measurements,
     },
   }
 }

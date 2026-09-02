@@ -1,17 +1,19 @@
 /**
- * E2EE channel to a *verified* workload (§7). `openE2eeChannel` refuses unless
- * the report passed {@link verifyReportBinding}: you cannot encrypt to a key
- * that is not in a verified, endorsed keyset. `seal` encrypts the request's
- * message contents to the attested X25519 key and returns the `X-E2EE-*`
- * headers; `open` decrypts the buffered response. Only the non-streamed
+ * E2EE v2 channel to a *verified* workload (spec/e2ee-v2.md). `openE2eeChannel`
+ * refuses unless the keyset comes from a report that passed
+ * {@link verifyReportBinding}: you cannot encrypt to a key that is not in a
+ * quote-bound keyset. `seal` encrypts the request's message contents to the
+ * attested X25519 key and returns the five `X-E2EE-*` request headers
+ * (e2ee-v2 §3.1); `open` decrypts the buffered response. Only the non-streamed
  * chat-completion shape this demo sends is supported; other request shapes
- * fail closed. Channel crypto is Web Crypto (X25519, HKDF, AES-GCM).
+ * fail closed. Channel crypto is Web Crypto (X25519, HKDF-SHA256, AES-256-GCM,
+ * e2ee-v2 §4).
  */
 
 import { bytesToHex } from '../encoding'
 import { fromHex } from './crypto'
 import { requestAad, responseAad } from './e2ee'
-import type { AttestationReport, ReportVerification } from './types'
+import type { ReportVerification } from './types'
 
 const ALGO = 'x25519-aes-256-gcm-hkdf-sha256'
 const subtle = globalThis.crypto.subtle
@@ -37,22 +39,14 @@ export interface ApprovedE2eeKey {
 }
 
 /**
- * Open an E2EE channel to the workload `report` describes, once `verification`
- * (from {@link verifyReportBinding} for that report) has passed.
+ * Open an E2EE channel to the workload whose keyset `verification` (from
+ * {@link verifyReportBinding}) established, encrypting to `approvedKey`.
  */
-export async function openE2eeChannel(
-  report: AttestationReport,
-  verification: ReportVerification,
-  approvedKey: ApprovedE2eeKey,
-): Promise<E2eeChannel> {
-  if (!verification.ok || verification.workloadKeysetDigest !== report.workload_keyset_digest) {
+export async function openE2eeChannel(verification: ReportVerification, approvedKey: ApprovedE2eeKey): Promise<E2eeChannel> {
+  if (!verification.ok || !verification.keyset) {
     throw new Error('openE2eeChannel: report is not verified; call verifyReportBinding and check .ok')
   }
-  const keys = (report.attestation.workload_keyset.e2ee_public_keys ?? []) as Array<{
-    key_id: string
-    algo: string
-    public_key: string
-  }>
+  const keys = Array.isArray(verification.keyset.e2ee_public_keys) ? verification.keyset.e2ee_public_keys : []
   const service = keys.find((key) => key?.key_id === approvedKey.keyId)
   if (
     approvedKey.algorithm !== ALGO ||
@@ -63,6 +57,7 @@ export async function openE2eeChannel(
     throw new Error('openE2eeChannel: approved E2EE key is missing or changed')
   }
   const serviceRaw = fromHex(service.public_key)
+  if (serviceRaw.length !== 32) throw new Error('openE2eeChannel: X25519 service key must be 32 bytes')
 
   // Static client key: responses are encrypted to it, and we decrypt with its private half.
   const client = (await subtle.generateKey({ name: 'X25519' }, true, ['deriveBits'])) as CryptoKeyPair
@@ -84,7 +79,7 @@ export async function openE2eeChannel(
         const encField = (text: string, field: string) =>
           sealField(serviceRaw, enc.encode(text), requestAad({ algo: ALGO, model, field, nonce, ts }))
 
-        // Whole-content encryption (§7.2): every message's content is sealed.
+        // Whole-content encryption (e2ee-v2 §5): every message's content is sealed.
         const messages = await Promise.all(
           (request.messages as Json[]).map(async (m, i) => {
             if (m?.content == null) return m
@@ -124,11 +119,12 @@ export async function openE2eeChannel(
               const out: Json = { ...c }
               if (out.message && typeof out.message === 'object') {
                 const m: Json = { ...(out.message as Json) }
-                if (Object.hasOwn(m, 'reasoning')) {
-                  throw new Error('open: unsupported unencrypted response field choices.message.reasoning')
+                // e2ee-v2 §5 also encrypts `audio.data`; this text-only demo
+                // never requests audio, so its presence in any form fails closed.
+                if (Object.hasOwn(m, 'audio')) throw new Error('open: unsupported response field choices.message.audio')
+                for (const key of ['content', 'reasoning', 'reasoning_content']) {
+                  await openStr(m, key, `choices.${i}.message.${key}`, decField)
                 }
-                await openStr(m, 'content', `choices.${i}.message.content`, decField)
-                await openStr(m, 'reasoning_content', `choices.${i}.message.reasoning_content`, decField)
                 out.message = m
               }
               return out
@@ -144,7 +140,7 @@ export async function openE2eeChannel(
   }
 }
 
-/** A field decryptor bound to the request context (§7.3) and the response `id`. */
+/** A field decryptor bound to the request context (e2ee-v2 §6) and the response `id`. */
 function responseDecryptor(
   clientPriv: CryptoKey,
   sent: { model: string; nonce: string; ts: number } | undefined,
@@ -156,7 +152,7 @@ function responseDecryptor(
     dec.decode(await openField(clientPriv, blobHex, responseAad({ algo: ALGO, model, id, field, nonce, ts })))
 }
 
-/** `choices` index is the entry's `index` member, else its array position (§7.2). */
+/** `choices` index is the entry's `index` member, else its array position (e2ee-v2 §5). */
 function indexOf(entry: Json, position: number): number {
   return typeof entry.index === 'number' ? entry.index : position
 }
@@ -165,20 +161,33 @@ function textFrom(v: unknown): string {
   return typeof v === 'string' ? v : ''
 }
 
-/** Decrypt string member `key` of `obj` at `field`, in place; leave non-strings untouched. */
+/**
+ * Decrypt string member `key` of `obj` at `field`, in place. A `null` member
+ * carries no content and stays; any other non-string value could carry
+ * plaintext the service was required to encrypt (e2ee-v2 §5), so it fails
+ * closed, as does a string that is not ciphertext under this request's AAD
+ * (a relay-visible plaintext string included).
+ */
 async function openStr(
   obj: Json,
   key: string,
   field: string,
   decField: (blobHex: string, field: string) => Promise<string>,
 ): Promise<void> {
-  if (typeof obj[key] === 'string') obj[key] = await decField(obj[key] as string, field)
+  const value = obj[key]
+  if (value === undefined || value === null) return
+  if (typeof value !== 'string') throw new Error(`open: unsupported unencrypted response field ${field}`)
+  try {
+    obj[key] = await decField(value, field)
+  } catch {
+    throw new Error(`open: response field ${field} is not ciphertext for this request`)
+  }
 }
 
 // `Uint8Array` to `BufferSource` (Web Crypto typings friction).
 const bs = (u: Uint8Array): BufferSource => u as BufferSource
 
-/** Derive the AES-256-GCM key from a raw X25519 shared secret (spec §7.1). */
+/** Derive the AES-256-GCM key from a raw X25519 shared secret (e2ee-v2 §4). */
 async function aesKey(shared: Uint8Array, usage: KeyUsage): Promise<CryptoKey> {
   const hk = await subtle.importKey('raw', bs(shared), 'HKDF', false, ['deriveKey'])
   return subtle.deriveKey(
@@ -190,7 +199,7 @@ async function aesKey(shared: Uint8Array, usage: KeyUsage): Promise<CryptoKey> {
   )
 }
 
-/** Encrypt one field to `serviceRaw` with a fresh ephemeral key, as wire hex. */
+/** Encrypt one field to `serviceRaw` with a fresh ephemeral key, as wire hex (e2ee-v2 §4). */
 async function sealField(serviceRaw: Uint8Array, plaintext: Uint8Array, aad: Uint8Array): Promise<string> {
   const eph = (await subtle.generateKey({ name: 'X25519' }, true, ['deriveBits'])) as CryptoKeyPair
   const ephPub = new Uint8Array(await subtle.exportKey('raw', eph.publicKey))
@@ -208,6 +217,7 @@ async function sealField(serviceRaw: Uint8Array, plaintext: Uint8Array, aad: Uin
 /** Decrypt one field addressed to the client static key. */
 async function openField(clientPriv: CryptoKey, blobHex: string, aad: Uint8Array): Promise<Uint8Array> {
   const blob = fromHex(blobHex)
+  if (blob.length < 32 + 12 + 16) throw new Error('open: encrypted field is too short')
   const ephPub = await subtle.importKey('raw', bs(blob.slice(0, 32)), { name: 'X25519' }, false, [])
   const shared = new Uint8Array(await subtle.deriveBits({ name: 'X25519', public: ephPub }, clientPriv, 256))
   const pt = await subtle.decrypt({ name: 'AES-GCM', iv: bs(blob.slice(32, 44)), additionalData: bs(aad) }, await aesKey(shared, 'decrypt'), bs(blob.slice(44)))

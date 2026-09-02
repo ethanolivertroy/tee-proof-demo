@@ -48,7 +48,7 @@ function evidenceRows(evidence: TrustEvidence): EvidenceRow[] {
       return [
         ...identity,
         { term: 'TDX status', value: evidence.gateway.tcbStatus },
-        { term: 'Workload', value: shortHex(evidence.gateway.workloadId), code: true },
+        { term: 'Keyset', value: shortHex(evidence.gateway.workloadKeysetDigest.slice('sha256:'.length)), code: true },
         ...validity,
         { term: 'Quote', value: shortHex(evidence.gateway.quoteHash), code: true },
         ...challenge,

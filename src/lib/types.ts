@@ -16,19 +16,21 @@ export interface NearCompletionReceipt extends BaseCompletionReceipt {
   provider: 'near-ai'
 }
 
+/**
+ * A verified ACI receipt (spec/aci.md §7, §9.3). `requestHash` is
+ * `request.received.body_hash` over the plaintext request the browser
+ * restored; `responseHash` is `response.returned.body_hash` over the exact
+ * encrypted wire response; `signer` is the keyset digest and key id the
+ * signature resolved through; `signedText` is the JCS signing input.
+ */
 export interface PhalaCompletionReceipt extends BaseCompletionReceipt {
   provider: 'phala-cloud'
   receiptId: string
-  workloadId: string
   workloadKeysetDigest: string
-  upstreamProviderType: string
+  /** Content address of the attested upstream session the receipt cites (§8). */
   sessionId: string
-  /**
-   * Whether the signed cleartext hash also matched our re-serialization of the
-   * decrypted body. Reserialization drift is expected, so this is a diagnostic
-   * rather than a trust requirement; the wire hash check is the binding one.
-   */
-  cleartextResponseHashMatched: boolean
+  /** Verified upstream origin recorded in that session (§8.2). */
+  upstreamEndpoint: string
 }
 
 export type CompletionReceipt = NearCompletionReceipt | PhalaCompletionReceipt
@@ -116,25 +118,19 @@ export interface NearTrustEvidence extends BaseTrustEvidence {
   raw: AttestationReport
 }
 
+/**
+ * What the gateway verifier measured. Every value here was checked against the
+ * pinned policy before it was returned; the assertions in
+ * phala-verifier-core.ts and phala-dstack.ts are the evidence, so there are
+ * no pass/fail flags to restate them.
+ */
 export interface PhalaGatewayEvidence {
-  quoteAuthentic: boolean
   quoteHash: string
   tcbStatus: string
   advisoryIds: string[]
   quoteType: string
-  debugDisabled: boolean
-  nonceBound: boolean
-  identityBound: boolean
-  keysetDigestBound: boolean
-  keysetEndorsementValid: boolean
-  keysetFresh: boolean
-  measurementsPinned: boolean
-  eventLogReplayed: boolean
-  composeBoundToQuote: boolean
-  kmsIdentityCustodyValid: boolean
-  sourceProvenanceMatched: boolean
-  workloadId: string
   workloadKeysetDigest: string
+  sourceCommit: string
   appId: string
   composeHash: string
   kmsRootPublicKey: string
@@ -144,6 +140,8 @@ export interface PhalaGatewayEvidence {
   receiptAlgorithm: string
   receiptKeyId: string
   receiptPublicKey: string
+  /** SPKI digest the keyset lists for the endpoint hostname (§9.1 check 6). */
+  tlsSpkiSha256: string
   measurements: { mrtd: string; rtmr0: string; rtmr1: string; rtmr2: string; rtmr3: string; mrConfigId: string }
 }
 
