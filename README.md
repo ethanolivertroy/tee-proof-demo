@@ -23,31 +23,45 @@ This demo gives proof of confidential inference. The browser does the verificati
 
 The browser does these steps for one synthetic prompt:
 
-1. The browser makes sure that the access token of the deployment owner is correct. If the token is not correct, the flow does not start.
+1. The browser sends the access token of the deployment owner to the Worker. The Worker rejects every `/api` route until the token is correct, so the flow does not start without it.
 2. The browser selects one of the two compiled provider and model policies.
 3. The browser makes a new 32-byte challenge.
-4. The browser examines the confidential-computing evidence of the selected provider.
+4. The browser examines the confidential-computing evidence of the selected provider in an isolated browser worker.
 5. The browser encrypts the prompt after the verification is successful. It does not encrypt the prompt before.
 6. The browser sends the ciphertext through a small Cloudflare Worker relay.
-7. The browser decrypts the completion.
-8. The browser makes sure that the exact request bytes and response bytes are correct. It uses an attested signing key or receipt key for this check.
+7. The browser authenticates the exact encrypted request bytes and the exact encrypted response bytes. It uses the attested signing key or receipt key for this check.
+8. The browser decrypts the completion. The text it shows is what the authenticated bytes decrypt to under the browser's own key.
 
 The Worker does these tasks:
 
-- The Worker supplies the static assets.
-- The Worker applies the shared owner gate to the routes that the provider bills.
-- The Worker permits connections to only the two approved upstream origins.
+- The Worker supplies the static assets. These are the only public routes.
+- The Worker applies the shared owner gate to every `/api` route, including the attestation relays.
+- The Worker permits connections to only three fixed upstream origins: the NEAR endpoint, the Phala endpoint, and the NVIDIA attestation service.
 - The Worker limits the size of the request bodies during the stream.
-- The Worker sends the ciphertext to the provider and back.
+- The Worker sends the ciphertext to the provider and back. It removes the owner token first.
 
 **The Worker is not a hardware TEE.**
+
+### Network connections
+
+| Who connects | To | Purpose |
+| --- | --- | --- |
+| Worker | `dsv4-flash.completions.near.ai` | NEAR attestation, chat, and signature routes |
+| Worker | `inference.phala.com` | Phala attestation, chat, receipt, and session routes |
+| Worker | `nras.attestation.nvidia.com` | NVIDIA GPU verdicts for the NEAR route |
+| Browser | `nras.attestation.nvidia.com` | JWKS to check the NVIDIA verdict signatures |
+| Browser worker | `pccs.phala.network`, `api.trustedservices.intel.com` | Intel TDX quote collateral |
+
+The browser connections show the visitor's IP address and timing to those parties. See [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md) for the full boundary.
 
 ## Reviewed routes
 
 | Provider | Fixed model | Browser verification | Exact completion authentication |
 | --- | --- | --- | --- |
 | NEAR AI Cloud | `deepseek-ai/DeepSeek-V4-Flash` | Intel TDX quote, measured workload, eight NVIDIA Hopper GPU verdicts, fresh nonce, and attested model key | Ed25519 signature over `model:SHA256(exact encrypted request bytes):SHA256(exact encrypted response bytes)` |
-| Phala Cloud | `openai/gpt-oss-20b` | Intel TDX quote, replayed event log, measured Compose/source commit, dstack KMS custody, fresh nonce, TLS/keyset bindings, and ACI E2EE keys | Signed ACI receipt that binds the cleartext request, the encrypted wire response, the decrypted response, the model, the endpoint, and the verified upstream session |
+| Phala Cloud | `openai/gpt-oss-20b` | Intel TDX quote, replayed event log, measured Compose and source commit, dstack KMS custody, fresh nonce, keyset digest and expiry, TLS SPKI binding, and ACI E2EE keys | Signed ACI receipt that binds the request hash, the encrypted wire response hash, the model, the endpoint, and the verified keyset digest |
+
+The two trust chains differ. On the NEAR route the browser verifies the TDX quote and the eight GPU verdicts itself. On the Phala route the browser verifies the gateway TDX quote and the dstack chain. Evidence about the upstream inference node arrives inside the signed receipt after the completion, so the browser does not verify that node's GPU directly.
 
 If you change the model, the demo removes the old evidence. The demo does not have these functions:
 
@@ -61,13 +75,13 @@ If you change the model, the demo removes the old evidence. The demo does not ha
 
 ## Spend protection
 
-The public can get access to a deployed `workers.dev` hostname. Thus this template must have a third secret, `DEMO_ACCESS_TOKEN`. The Worker rejects each chat, signature, receipt, and session route that the provider bills, unless the browser supplies the correct token.
+The public can get access to a deployed `workers.dev` hostname. Thus this template must have a third secret, `DEMO_ACCESS_TOKEN`. The Worker rejects every `/api` route unless the browser supplies the correct token. This includes the attestation and NVIDIA relays, so an anonymous visitor cannot use your Worker to send traffic to the providers.
 
-- Use a random value that is different for each deployment. Use between 20 and 256 characters.
-- The browser keeps the token in memory for the current tab. The browser does not write the token to local storage.
-- The Worker removes the token before it sends the request to a provider.
-- The static assets and the attestation endpoints stay public. These routes do not use the provider credentials of the deployer.
-- The gate is a shared secret. The gate is not SSO, not a rate limit, and not a fixed limit on provider costs.
+- Use a random value that is different for each deployment. Use between 20 and 256 characters. The Worker answers 503 on every `/api` route if the configured token is missing or outside that range.
+- The page holds the token in memory only. It does not write the token to local storage, and the input opts out of browser autofill.
+- The Worker removes the token before it sends the request upstream.
+- Only the static assets stay public.
+- The gate is a shared secret. The gate is not SSO, not a rate limit, and not a fixed limit on provider costs. Add a Cloudflare rate-limiting rule on `/api/*` if you share the token widely.
 
 For access control that is related to identity, turn on [Cloudflare Access on the Worker](https://developers.cloudflare.com/workers/configuration/routing/workers-dev/#manage-access-to-workersdev) after the deployment: **Workers & Pages → your Worker → Settings → Domains & Routes → workers.dev → Enable Cloudflare Access**. Keep the owner token as a second control for the routes that the provider bills. Access settings are specific to each account and policy. Thus the repository cannot select or set the permitted identities of the operator through the generic Deploy Button.
 
