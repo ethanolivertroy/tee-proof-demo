@@ -1,50 +1,43 @@
 /**
- * Level 2 report-binding checks (§10.1 checks 2-6), minus the hardware root of
- * trust. This verifies the *cryptographic binding* of the report: that its
- * `workload_id`, keyset digest, `report_data`, and endorsement are internally
- * consistent and endorsed by the identity key, for the nonce the client
- * supplied. It does NOT do §10.1 check 1 (the TEE quote verifies to the vendor
- * root) or the "hardware evidence binds `report_data`" half of check 4: parsing
- * and checking a TDX/SEV-SNP quote is verifier-profile territory. Compose this
- * with a quote verifier and the custody/provenance/channel checks (§10.1
- * checks 1, 7-10) for full Level 2.
+ * Report binding checks that need no hardware root: §9.1 check 2 (binding and
+ * freshness: keyset bytes -> digest -> statement -> `report_data`) and check 3
+ * (expiry), plus the aci/1 protocol gate (Appendix B). Check 1 (the TDX quote
+ * verifies to the Intel root and binds `report_data`) and checks 4-6
+ * (provenance, custody, channel) are composed by the verifier profile in
+ * ../phala-verifier-core.ts.
  */
 
-import { fromHex, verifySignature } from './crypto'
-import {
-  computeKeysetDigest,
-  computeReportData,
-  computeWorkloadId,
-  keysetEndorsementPayload,
-} from './digest'
-import { AciFormatError } from './errors'
-import type { AttestationReport, Check, ReportVerification } from './types'
+import { computeKeysetDigest, computeReportData } from './digest'
+import type { AttestationReport, Check, ReportVerification, WorkloadKeyset } from './types'
+
+/**
+ * Keysets living longer than this are rejected as implausibly distant (§3.1).
+ * The reference gateway issues keysets that expire within weeks; a year leaves
+ * room for slower rotation without accepting an effectively unexpiring key.
+ */
+export const MAX_KEYSET_LIFETIME_SECONDS = 366 * 86_400
 
 /** Options for {@link verifyReportBinding}. */
 export interface ReportBindingOptions {
   /**
-   * Current time in Unix seconds for the freshness check (§10.1 check 6).
-   * Defaults to the local clock. Pass an explicit value for deterministic tests.
+   * Current time in Unix seconds for the expiry check (§9.1 check 3).
+   * Defaults to the local clock; pass an explicit value for deterministic tests.
    */
   now?: number
-  /**
-   * Whether the profile trusts the platform's declared validity window
-   * (`freshness.fetched_at`/`stale_after`, §5.1). Off by default: recency comes
-   * from the nonce binding, and `fetched_at`/`stale_after` need a securely
-   * synced TEE clock to mean anything.
-   */
-  trustPlatformClock?: boolean
+  /** Upper bound on `not_after - now`; defaults to {@link MAX_KEYSET_LIFETIME_SECONDS}. */
+  maxKeysetLifetimeSeconds?: number
 }
 
 /**
- * Verify the report's cryptographic bindings for `nonce` (§10.1 checks 2-6).
- * `nonce` is the value the verifier supplied to `GET /v1/aci/attestation`, or
- * `null`/`undefined` when it requested no nonce (§4.4).
+ * Verify the report's cryptographic bindings for `nonce`, the value this
+ * client sent to `GET /v1/aci/attestation`, or `null`/`undefined` when it sent
+ * none (§3.2). One recomputation establishes that the keyset is exactly what
+ * the quote bound and that the quote postdates the challenge (§9.1 check 2).
  *
- * Returns a per-check result and the identity recomputed from the report's
- * keyset; a failed check is `ok: false`, never thrown. Throws
- * {@link UnsupportedAlgorithmError} when the identity-key algorithm is outside
- * the supported `ed25519` and `ecdsa-secp256k1` set.
+ * Returns per-check results plus the established keyset (digest and parsed
+ * form); a failed check on the served report is `ok: false`, never thrown.
+ * The one exception is the caller's own input: a nonce that is not 64
+ * lowercase hex throws {@link AciFormatError} (§3.2).
  */
 export function verifyReportBinding(
   report: AttestationReport,
@@ -52,85 +45,67 @@ export function verifyReportBinding(
   options: ReportBindingOptions = {},
 ): ReportVerification {
   const now = options.now ?? Math.floor(Date.now() / 1000)
+  const maxLifetime = options.maxKeysetLifetimeSeconds ?? MAX_KEYSET_LIFETIME_SECONDS
   const checks: Check[] = []
 
-  const keyset = report.attestation.workload_keyset
-  const identityKey = keyset.workload_identity.public_key
+  // Protocol gate (Appendix B): artifacts with another version are rejected.
+  const versionOk = report.api_version === 'aci/1'
+  checks.push({
+    name: 'api_version',
+    ok: versionOk,
+    ...(versionOk ? {} : { detail: `api_version "${String(report.api_version)}" is not "aci/1"` }),
+  })
 
-  // Check 2: workload_id == digest of the identity public key in the report's keyset.
-  const workloadId = computeWorkloadId(identityKey)
-  pushEqual(checks, 'workload_id', report.workload_id, workloadId)
+  const keysetValue: unknown = report.attestation?.workload_keyset
+  if (keysetValue === null || typeof keysetValue !== 'object' || Array.isArray(keysetValue)) {
+    const detail = 'workload_keyset is not a JSON object'
+    for (const name of ['workload_keyset_digest', 'report_data', 'not_after', 'not_after_bound']) {
+      checks.push({ name, ok: false, detail })
+    }
+    return { ok: false, checks }
+  }
 
-  // Check 3: workload_keyset_digest == digest of the report's keyset.
-  const workloadKeysetDigest = computeKeysetDigest(keyset)
-  pushEqual(checks, 'workload_keyset_digest', report.workload_keyset_digest, workloadKeysetDigest)
-
-  // Check 4 (binding half): report_data == the §4.4 statement digest for this nonce.
-  // The hardware-evidence-binds-report_data half is out of scope (see file header).
-  const expectedReportData = computeReportData(workloadId, workloadKeysetDigest, nonce)
+  // §9.1 check 2: recompute the whole chain from the served keyset object,
+  // canonicalizing exactly what was parsed, unknown members included. The
+  // recomputed digest is authoritative (Appendix A); the report's restated copy
+  // is checked for consistency but never feeds the statement.
+  const digest = computeKeysetDigest(keysetValue as WorkloadKeyset)
+  pushEqual(checks, 'workload_keyset_digest', report.workload_keyset_digest, digest)
+  const expectedReportData = computeReportData(digest, nonce)
   pushEqual(checks, 'report_data', report.attestation.report_data, expectedReportData)
 
-  // Check 5: keyset endorsement verifies under the identity key, algo matching.
-  const endorsement = report.attestation.keyset_endorsement
-  if (endorsement.algo !== identityKey.algo) {
-    checks.push({
-      name: 'keyset_endorsement',
-      ok: false,
-      detail: `endorsement.algo "${endorsement.algo}" != identity key algo "${identityKey.algo}"`,
-    })
+  const keyset = keysetValue as WorkloadKeyset
+
+  // §9.1 check 3: now < not_after in the decoded keyset, and the keyset is not
+  // implausibly long-lived (§3.1).
+  if (!Number.isSafeInteger(keyset.not_after)) {
+    const detail = 'keyset has no integer not_after'
+    checks.push({ name: 'not_after', ok: false, detail })
+    checks.push({ name: 'not_after_bound', ok: false, detail })
   } else {
-    try {
-      const ok = verifySignature(
-        identityKey.algo,
-        fromHex(identityKey.public_key),
-        fromHex(endorsement.value),
-        keysetEndorsementPayload(workloadKeysetDigest),
-        'keyset endorsement (§4.3)',
-      )
-      checks.push({
-        name: 'keyset_endorsement',
-        ok,
-        ...(ok ? {} : { detail: 'endorsement signature failed under identity key' }),
-      })
-    } catch (error) {
-      if (!(error instanceof AciFormatError)) throw error
-      checks.push({
-        name: 'keyset_endorsement',
-        ok: false,
-        detail: `malformed endorsement material: ${error.message}`,
-      })
-    }
-  }
-
-  // Check 6: freshness. Nonce binding is check 4; here bound the epoch and,
-  // when trusted, the declared validity window.
-  const notAfter = keyset.keyset_epoch.not_after
-  const epochOk = now < notAfter
-  checks.push({
-    name: 'keyset_epoch.not_after',
-    ok: epochOk,
-    ...(epochOk ? {} : { detail: `now ${now} >= not_after ${notAfter}` }),
-  })
-  if (options.trustPlatformClock) {
-    const freshness = report.attestation.freshness
-    const fetchedAt = freshness?.fetched_at
-    const staleAfter = freshness?.stale_after
-    const windowOk =
-      typeof fetchedAt === 'number' &&
-      typeof staleAfter === 'number' &&
-      fetchedAt <= now &&
-      now < staleAfter
+    const ok = now < keyset.not_after
     checks.push({
-      name: 'freshness_window',
-      ok: windowOk,
-      ...(windowOk ? {} : { detail: `now ${now} outside [${fetchedAt}, ${staleAfter})` }),
+      name: 'not_after',
+      ok,
+      ...(ok ? {} : { detail: `now ${now} >= not_after ${keyset.not_after}` }),
+    })
+    const bounded = keyset.not_after - now <= maxLifetime
+    checks.push({
+      name: 'not_after_bound',
+      ok: bounded,
+      ...(bounded ? {} : { detail: `not_after ${keyset.not_after} is more than ${maxLifetime}s after now ${now}` }),
     })
   }
 
-  return { ok: checks.every((c) => c.ok), checks, workloadId, workloadKeysetDigest }
+  return {
+    ok: checks.every((c) => c.ok),
+    checks,
+    workloadKeysetDigest: digest,
+    keyset,
+  }
 }
 
-function pushEqual(checks: Check[], name: string, actual: string, expected: string): void {
+function pushEqual(checks: Check[], name: string, actual: unknown, expected: string): void {
   const ok = actual === expected
-  checks.push({ name, ok, ...(ok ? {} : { detail: `report ${actual} != recomputed ${expected}` }) })
+  checks.push({ name, ok, ...(ok ? {} : { detail: `report ${String(actual)} != recomputed ${expected}` }) })
 }

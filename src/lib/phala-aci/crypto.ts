@@ -1,22 +1,19 @@
 /**
- * ACI signature verification. All primitives are the same audited `@noble`
- * implementations the rest of src/lib uses: SHA-256 from @noble/hashes,
- * strict Ed25519 from ../crypto, secp256k1 from @noble/curves (that curve is
- * absent from Web Crypto).
+ * Decoding and signature primitives for the ACI artifacts. ACI's only
+ * signature algorithm is Ed25519 and its only hash is SHA-256 (Appendix B);
+ * both come from the audited `@noble` implementations the rest of src/lib
+ * uses (see ../crypto), not from Web Crypto, so the same code runs in the
+ * worker, in tests, and in Node.
  */
 
-import { secp256k1 } from '@noble/curves/secp256k1.js'
-import { sha256 } from '@noble/hashes/sha2.js'
-import { normalizeSecp256k1RecoveryId, verifyEd25519Bytes } from '../crypto'
-import { equalBytes } from '../encoding'
-import { AciFormatError, UnsupportedAlgorithmError } from './errors'
+import { verifyEd25519Bytes } from '../crypto'
+import { AciFormatError } from './errors'
 
 /**
  * Decode strict hex (optionally `0x`-prefixed) to bytes. This deliberately is
  * not `encoding.hexToBytes`: malformed input must surface as
- * {@link AciFormatError} so `verifyReceipt` and `verifyReportBinding` can
- * convert it into a failed check instead of a thrown error, and the empty
- * string (an absent value) is accepted.
+ * {@link AciFormatError} so `verifyReceipt` can convert it into a failed check
+ * instead of a thrown error, and the empty string (an absent value) is accepted.
  */
 export function fromHex(hex: string): Uint8Array {
   const h = hex.startsWith('0x') || hex.startsWith('0X') ? hex.slice(2) : hex
@@ -34,54 +31,28 @@ export function fromHex(hex: string): Uint8Array {
   return out
 }
 
-/** Normalize the 64-byte x||y and 65-byte uncompressed secp256k1 encodings. */
-function normalizeSecp256k1PublicKey(publicKeyRaw: Uint8Array): Uint8Array {
-  if (publicKeyRaw.length === 64) return Uint8Array.of(0x04, ...publicKeyRaw)
-  if (publicKeyRaw.length === 65 && publicKeyRaw[0] === 0x04) return publicKeyRaw
-  throw new AciFormatError(`secp256k1 public key must be 64 or 65 bytes, got ${publicKeyRaw.length}`)
+/** Decode standard base64 (RFC 4648 §4) to the exact underlying bytes. */
+export function fromBase64(b64: string): Uint8Array {
+  if (!/^[A-Za-z0-9+/]*={0,2}$/.test(b64) || b64.length % 4 !== 0) {
+    throw new AciFormatError('invalid base64')
+  }
+  let bin: string
+  try {
+    bin = atob(b64)
+  } catch {
+    throw new AciFormatError('invalid base64')
+  }
+  const out = new Uint8Array(bin.length)
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i)
+  return out
 }
 
 /**
- * Verify an ACI secp256k1 signature. Keyset endorsements use compact r||s over
- * SHA-256(message). Receipts use r||s||v and must recover the listed public key.
+ * Verify an Ed25519 signature (RFC 8032) over `message`. `publicKeyRaw` is the
+ * 32-byte raw key; `signature` the 64-byte value. Returns false on a bad
+ * signature or malformed key, never throws for those.
  */
-function verifySecp256k1(publicKeyRaw: Uint8Array, signature: Uint8Array, message: Uint8Array): boolean {
-  let publicKey: Uint8Array
-  try {
-    publicKey = normalizeSecp256k1PublicKey(publicKeyRaw)
-  } catch {
-    return false
-  }
-
-  if (signature.length === 64) {
-    return secp256k1.verify(signature, message, publicKey)
-  }
-  if (signature.length !== 65) return false
-
-  const recovery = normalizeSecp256k1RecoveryId(signature[64]!)
-  if (recovery === null) return false
-  try {
-    const parsed = secp256k1.Signature.fromBytes(signature.slice(0, 64), 'compact')
-    if (parsed.hasHighS()) return false
-    const recovered = parsed
-      .addRecoveryBit(recovery)
-      .recoverPublicKey(sha256(message))
-      .toBytes(false)
-    return equalBytes(recovered, publicKey)
-  } catch {
-    return false
-  }
-}
-
-/** Verify a signature under the exact algorithm declared by the attested key. */
-export function verifySignature(
-  algo: string,
-  publicKeyRaw: Uint8Array,
-  signature: Uint8Array,
-  message: Uint8Array,
-  context: string,
-): boolean {
-  if (algo === 'ed25519') return verifyEd25519Bytes(signature, message, publicKeyRaw)
-  if (algo === 'ecdsa-secp256k1') return verifySecp256k1(publicKeyRaw, signature, message)
-  throw new UnsupportedAlgorithmError(algo, context)
+export function verifyEd25519(publicKeyRaw: Uint8Array, signature: Uint8Array, message: Uint8Array): boolean {
+  if (publicKeyRaw.length !== 32 || signature.length !== 64) return false
+  return verifyEd25519Bytes(signature, message, publicKeyRaw)
 }
